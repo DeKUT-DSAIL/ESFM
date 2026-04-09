@@ -1,15 +1,21 @@
 """Copyright (c) Microsoft Corporation. Licensed under the MIT license."""
 
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 import dataclasses
 from datetime import datetime
 from functools import partial
-from typing import Callable
+from pathlib import Path
+from typing import Callable, List
+from datetime import timedelta
 
 import numpy as np
 import torch
 from scipy.interpolate import RegularGridInterpolator as RGI
 
-from aurora.normalisation import (
+from esfm.normalisation import (
     normalise_atmos_var,
     normalise_surf_var,
     unnormalise_atmos_var,
@@ -39,17 +45,41 @@ class Metadata:
     lon: torch.Tensor
     time: tuple[datetime, ...]
     atmos_levels: tuple[int | float, ...]
+    locations: dict
+    scales: dict
+    dataset_name: str = 'dataset_name_is_not_defined'
     rollout_step: int = 0
+    grid_resolution: float = 0.25
+    is_global_observation: bool = True
+    atmos_vars_output: tuple[str] = None
+    surf_vars_output: tuple[str] = None
+    atmos_levels_output: tuple[int | float, ...] = None
+    lead_time_seconds: float = timedelta(hours=6).total_seconds()
 
     def __post_init__(self):
-        if not torch.all(self.lat[1:] - self.lat[:-1] < 0):
-            raise ValueError("Latitudes must be strictly decreasing.")
         if not (torch.all(self.lat <= 90) and torch.all(self.lat >= -90)):
             raise ValueError("Latitudes must be in the range [-90, 90].")
-        if not torch.all(self.lon[1:] - self.lon[:-1] > 0):
-            raise ValueError("Longitudes must be strictly increasing.")
         if not (torch.all(self.lon >= 0) and torch.all(self.lon < 360)):
             raise ValueError("Longitudes must be in the range [0, 360).")
+
+        # Validate vector-valued latitudes and longitudes:
+        if self.lat.dim() == self.lon.dim() == 1:
+            if not torch.all(self.lat[1:] - self.lat[:-1] < 0):
+                raise ValueError("Latitudes must be strictly decreasing.")
+            if not torch.all(self.lon[1:] - self.lon[:-1] > 0):
+                raise ValueError("Longitudes must be strictly increasing.")
+
+        # Validate matrix-valued latitudes and longitudes:
+        elif self.lat.dim() == self.lon.dim() == 2:
+            if not torch.all(self.lat[1:, :] - self.lat[:-1, :]):
+                raise ValueError("Latitudes must be strictly decreasing along every column.")
+            if not torch.all(self.lon[:, 1:] - self.lon[:, :-1] > 0):
+                raise ValueError("Longitudes must be strictly increasing along every row.")
+
+        else:
+            raise ValueError(
+                "The latitudes and longitudes must either both be vectors or both be matrices."
+            )
 
 
 @dataclasses.dataclass
@@ -71,9 +101,36 @@ class Batch:
     metadata: Metadata
 
     @property
+    def has_surf_vars(self):
+        return True if len(self.surf_vars) > 0 else False
+
+    @property
+    def has_atmos_vars(self):
+        return True if len(self.atmos_vars) > 0 else False
+    
+    @property
+    def has_static_vars(self):
+        return True if len(self.static_vars) > 0 else False
+
+    @property
     def spatial_shape(self) -> tuple[int, int]:
-        """Get the spatial shape from an arbitrary surface-level variable."""
-        return next(iter(self.surf_vars.values())).shape[-2:]
+        """Get the spatial shape from an arbitrary surface or atmos variable."""
+        if self.has_surf_vars:
+            return next(iter(self.surf_vars.values())).shape[-2:]
+        elif self.has_atmos_vars:
+            return next(iter(self.atmos_vars.values())).shape[-2:]
+        else:
+            raise ValueError("Both surf_vars and atmos_vars are empty, cannot determine spatial shape.")
+
+    @property
+    def batch_and_history_dims(self) -> tuple[int, int]:
+        """Get the batch and history dimension."""
+        if self.has_surf_vars:
+            return next(iter(self.surf_vars.values())).shape[:2]
+        elif self.has_atmos_vars:
+            return next(iter(self.atmos_vars.values())).shape[:2]
+        else:
+            raise ValueError("Both surf_vars and atmos_vars are empty in the batch.")
 
     def normalise(self, surf_stats: dict[str, tuple[float, float]]) -> "Batch":
         """Normalise all variables in the batch.
@@ -85,21 +142,26 @@ class Batch:
         Returns:
             :class:`.Batch`: Normalised batch.
         """
+        locations = self.metadata.locations
+        scales = self.metadata.scales
+        atmos_levels = self.metadata.atmos_levels
         return Batch(
             surf_vars={
-                k: normalise_surf_var(v, k, stats=surf_stats) for k, v in self.surf_vars.items()
+                k: normalise_surf_var(v, k, locations=locations, scales=scales, stats=surf_stats) 
+                for k, v in self.surf_vars.items()
             },
             static_vars={
-                k: normalise_surf_var(v, k, stats=surf_stats) for k, v in self.static_vars.items()
+                k: normalise_surf_var(v, k, locations=locations, scales=scales, stats=surf_stats) 
+                for k, v in self.static_vars.items()
             },
             atmos_vars={
-                k: normalise_atmos_var(v, k, self.metadata.atmos_levels)
+                k: normalise_atmos_var(v, k, locations=locations, scales=scales, atmos_levels=atmos_levels)
                 for k, v in self.atmos_vars.items()
             },
             metadata=self.metadata,
         )
 
-    def unnormalise(self, surf_stats: dict[str, tuple[float, float]]) -> "Batch":
+    def unnormalise(self, surf_stats: dict[str, tuple[float, float]], atmos_levels=None) -> "Batch":
         """Unnormalise all variables in the batch.
 
         Args:
@@ -109,15 +171,21 @@ class Batch:
         Returns:
             :class:`.Batch`: Unnormalised batch.
         """
+        locations = self.metadata.locations
+        scales = self.metadata.scales
+        if atmos_levels is None:
+            atmos_levels = self.metadata.atmos_levels
         return Batch(
             surf_vars={
-                k: unnormalise_surf_var(v, k, stats=surf_stats) for k, v in self.surf_vars.items()
+                k: unnormalise_surf_var(v, k, locations=locations, scales=scales, stats=surf_stats) 
+                for k, v in self.surf_vars.items()
             },
             static_vars={
-                k: unnormalise_surf_var(v, k, stats=surf_stats) for k, v in self.static_vars.items()
+                k: unnormalise_surf_var(v, k, locations=locations, scales=scales, stats=surf_stats) 
+                for k, v in self.static_vars.items()
             },
             atmos_vars={
-                k: unnormalise_atmos_var(v, k, self.metadata.atmos_levels)
+                k: unnormalise_atmos_var(v, k, locations=locations, scales=scales, atmos_levels=atmos_levels)
                 for k, v in self.atmos_vars.items()
             },
             metadata=self.metadata,
@@ -129,7 +197,6 @@ class Batch:
 
         if w % patch_size != 0:
             raise ValueError("Width of the data must be a multiple of the patch size.")
-
         if h % patch_size == 0:
             return self
         elif h % patch_size == 1:
@@ -138,11 +205,20 @@ class Batch:
                 static_vars={k: v[..., :-1, :] for k, v in self.static_vars.items()},
                 atmos_vars={k: v[..., :-1, :] for k, v in self.atmos_vars.items()},
                 metadata=Metadata(
+                    dataset_name=self.metadata.dataset_name,
                     lat=self.metadata.lat[:-1],
                     lon=self.metadata.lon,
                     atmos_levels=self.metadata.atmos_levels,
                     time=self.metadata.time,
+                    locations=self.metadata.locations,
+                    scales=self.metadata.scales,
                     rollout_step=self.metadata.rollout_step,
+                    grid_resolution=self.metadata.grid_resolution,
+                    is_global_observation=self.metadata.is_global_observation,
+                    atmos_vars_output=self.metadata.atmos_vars_output,
+                    surf_vars_output=self.metadata.surf_vars_output,
+                    atmos_levels_output=self.metadata.atmos_levels_output,
+                    lead_time_seconds=self.metadata.lead_time_seconds,
                 ),
             )
         else:
@@ -157,11 +233,22 @@ class Batch:
             static_vars={k: f(v) for k, v in self.static_vars.items()},
             atmos_vars={k: f(v) for k, v in self.atmos_vars.items()},
             metadata=Metadata(
+                dataset_name=self.metadata.dataset_name,
                 lat=f(self.metadata.lat),
                 lon=f(self.metadata.lon),
                 atmos_levels=self.metadata.atmos_levels,
                 time=self.metadata.time,
+                # locations=self.metadata.locations,
+                # scales=self.metadata.scales,
+                locations={k: f(v) for k, v in self.metadata.locations.items()},
+                scales = {k: f(v) for k, v in self.metadata.scales.items()},
                 rollout_step=self.metadata.rollout_step,
+                grid_resolution=self.metadata.grid_resolution,
+                is_global_observation=self.metadata.is_global_observation,
+                atmos_vars_output=self.metadata.atmos_vars_output,
+                surf_vars_output=self.metadata.surf_vars_output,
+                atmos_levels_output=self.metadata.atmos_levels_output,
+                lead_time_seconds=self.metadata.lead_time_seconds,
             ),
         )
 
@@ -172,6 +259,10 @@ class Batch:
     def type(self, t: type) -> "Batch":
         """Convert everything to type `t`."""
         return self._fmap(lambda x: x.type(t))
+
+    def detach(self) -> "Batch":
+        """Detach all tensors from the computation graph."""
+        return self._fmap(lambda x: x.detach())
 
     def regrid(self, res: float) -> "Batch":
         """Regrid the batch to a `res` degrees resolution.
@@ -197,13 +288,103 @@ class Batch:
             static_vars={k: interpolate_res(v) for k, v in self.static_vars.items()},
             atmos_vars={k: interpolate_res(v) for k, v in self.atmos_vars.items()},
             metadata=Metadata(
+                dataset_name=self.metadata.dataset_name,
                 lat=lat_new,
                 lon=lon_new,
                 atmos_levels=self.metadata.atmos_levels,
                 time=self.metadata.time,
+                locations=self.metadata.locations,
+                scales=self.metadata.scales,
                 rollout_step=self.metadata.rollout_step,
+                grid_resolution=self.metadata.grid_resolution,
+                is_global_observation=self.metadata.is_global_observation,
+                atmos_vars_output=self.metadata.atmos_vars_output,
+                surf_vars_output=self.metadata.surf_vars_output,
+                atmos_levels_output=self.metadata.atmos_levels_output,
+                lead_time_seconds=self.metadata.lead_time_seconds,
             ),
         )
+    
+    def to_netcdf(self, path: str | Path) -> None:
+        """Write the batch to a file.
+
+        This requires `xarray` and `netcdf4` to be installed.
+        """
+        try:
+            import xarray as xr
+        except ImportError as e:
+            raise RuntimeError("`xarray` must be installed.") from e
+
+        ds = xr.Dataset(
+            {
+                **{
+                    f"surf_{k}": (("batch", "history", "latitude", "longitude"), _np(v))
+                    for k, v in self.surf_vars.items()
+                },
+                **{
+                    f"static_{k}": (("latitude", "longitude"), _np(v))
+                    for k, v in self.static_vars.items()
+                },
+                **{
+                    f"atmos_{k}": (("batch", "history", "level", "latitude", "longitude"), _np(v))
+                    for k, v in self.atmos_vars.items()
+                },
+            },
+            coords={
+                "latitude": _np(self.metadata.lat),
+                "longitude": _np(self.metadata.lon),
+                "time": list(self.metadata.time),
+                "level": list(self.metadata.atmos_levels),
+                "rollout_step": self.metadata.rollout_step,
+            },
+        )
+        ds.to_netcdf(path)
+
+    @classmethod
+    def from_netcdf(cls, path: str | Path, grid_resolution: float, is_global_observation: bool) -> "Batch":
+        """Load a batch from a file."""
+        try:
+            import xarray as xr
+        except ImportError as e:
+            raise RuntimeError("`xarray` must be installed.") from e
+
+        ds = xr.load_dataset(path, engine="netcdf4")
+
+        surf_vars: List[str] = []
+        static_vars: List[str] = []
+        atmos_vars: List[str] = []
+
+        for k in ds:
+            if k.startswith("surf_"):
+                surf_vars.append(k.removeprefix("surf_"))
+            elif k.startswith("static_"):
+                static_vars.append(k.removeprefix("static_"))
+            elif k.startswith("atmos_"):
+                atmos_vars.append(k.removeprefix("atmos_"))
+
+        return Batch(
+            surf_vars={k: torch.from_numpy(ds[f"surf_{k}"].values) for k in surf_vars},
+            static_vars={k: torch.from_numpy(ds[f"static_{k}"].values) for k in static_vars},
+            atmos_vars={k: torch.from_numpy(ds[f"atmos_{k}"].values) for k in atmos_vars},
+            metadata=Metadata(
+                dataset_name='netcdf_dataset',
+                lat=torch.from_numpy(ds.latitude.values),
+                lon=torch.from_numpy(ds.longitude.values),
+                time=tuple(ds.time.values.astype("datetime64[s]").tolist()),
+                atmos_levels=tuple(ds.level.values),
+                rollout_step=int(ds.rollout_step.values),
+                grid_resolution=grid_resolution,
+                is_global_observation=is_global_observation,
+                atmos_vars_output=None,
+                surf_vars_output=None,
+                atmos_levels_output=None,
+                lead_time_seconds=timedelta(hours=6).total_seconds(),
+            ),
+        )
+
+
+def _np(x: torch.Tensor) -> np.ndarray:
+    return x.detach().cpu().numpy()
 
 
 def interpolate(

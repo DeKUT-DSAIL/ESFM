@@ -1,0 +1,23 @@
+unmaskv3_var5spatial25vertical25:
+    class: MaskDatasetV3
+    conf:
+        prob_mask_var: 0.333
+        prob_mask_spatial: 0.50
+        prob_mask_vertical: 0.333
+        tokenization_patch_size: 4
+        contiguous_spatial_mask_ratio: 0.2
+        d_str_task: 
+            spatial-unmask: 0.25
+            vertical-unmask: 0.25
+            variable-unmask: 0.5
+
+unmask_station_npzv2:           
+  class: MaskDataset
+  conf:
+    prob_mask_var:      0.10
+    prob_mask_spatial:  0.20
+    prob_mask_vertical: 0.0
+    tokenization_patch_size: 1
+    d_str_task:
+      spatial-unmask:   0.25
+      variable-unmask:  0.25  

@@ -1,12 +1,16 @@
 """Copyright (c) Microsoft Corporation. Licensed under the MIT license."""
 
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 import math
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from aurora.area import area, radius_earth
+from esfm.area import area, radius_earth
 
 __all__ = [
     "FourierExpansion",
@@ -94,7 +98,23 @@ class FourierExpansion(nn.Module):
 
 # Determine a reasonable smallest value for the scale embedding by assuming a smallest delta in
 # latitudes and longitudes.
-_delta = 0.01  # Reasonable smallest delta in latitude and longitude
+def get_delta(grid_deg_delta: float = None) -> float:
+    """Get the appropriate delta value based on data type.
+    
+    Args:
+        grid_deg_delta: If None, reads from config
+        
+    Returns:
+        Delta value: 1e-4 for station data, 0.01 for regular data
+    """
+    if grid_deg_delta is not None:
+        return grid_deg_delta
+    from config import parse_known_args
+    args, _ = parse_known_args()
+    grid_deg_delta = args.grid_deg_delta
+    return grid_deg_delta
+
+_delta = get_delta()  # Station data: 1e-5, Regular data: 0.01
 _min_patch_area: float = area(
     torch.tensor(
         [
@@ -125,3 +145,9 @@ levels_expansion = FourierExpansion(0.01, 1e5)
 
 absolute_time_expansion = FourierExpansion(1, 24 * 365.25, assert_range=False)
 """:class:`.FourierExpansion`: Fourier expansion for the absolute time encoding in hours."""
+
+absolute_time_expansion_minutes = FourierExpansion(1, 24 * 365.25 * 60, assert_range=False)
+""":class:`.FourierExpansion`: Fourier expansion for the absolute time encoding in minutes."""
+
+variables_expansion = FourierExpansion(1, 201)
+""":class:`.FourierExpansion`: Fourier expansion for the variables in number"""

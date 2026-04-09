@@ -56,6 +56,11 @@ These files are licenced under respectively the following two licences:
     SOFTWARE.
 """
 
+
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -97,6 +102,9 @@ class PerceiverAttention(nn.Module):
         context_dim: int,
         head_dim: int = 64,
         num_heads: int = 8,
+        ln_k_q: bool = False,
+        attn_drop_rate: float = 0.1,
+        disable_flashattention: bool = False,
     ) -> None:
         """Initialise.
 
@@ -105,15 +113,36 @@ class PerceiverAttention(nn.Module):
             context_dim (int): Dimensionality of the context features also given as input.
             head_dim (int): Attention head dimensionality.
             num_heads (int): Number of heads.
+            ln_k_q (bool): Apply an extra layer norm. to the keys and queries.
+            
+        Class updated based off of https://github.com/microsoft/aurora/blob/4ccd1fa0cdb6d7e4909eefbba0e3c1aefca3b5a5/aurora/model/perceiver.py#L91
         """
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.inner_dim = head_dim * num_heads
+        self.attn_drop = attn_drop_rate
+        self.disable_flashattention = disable_flashattention
+        self.flash_attn_func = None
+
+        if not disable_flashattention:
+            try:
+                from flash_attn import flash_attn_func  # type: ignore[import-not-found]
+                self.flash_attn_func = flash_attn_func
+            except ImportError:
+                print("Flash Attention is not installed. Falling back to regular attention.")
+                self.disable_flashattention = True
 
         self.to_q = nn.Linear(latent_dim, self.inner_dim, bias=False)
         self.to_kv = nn.Linear(context_dim, self.inner_dim * 2, bias=False)
         self.to_out = nn.Linear(self.inner_dim, latent_dim, bias=False)
+        
+        if ln_k_q:
+            self.ln_k = nn.LayerNorm(num_heads * head_dim)
+            self.ln_q = nn.LayerNorm(num_heads * head_dim)
+        else:
+            self.ln_k = lambda x: x
+            self.ln_q = lambda x: x
 
     def forward(self, latents: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """Run the cross-attention module.
@@ -131,10 +160,48 @@ class PerceiverAttention(nn.Module):
 
         q = self.to_q(latents)  # (B, L1, D2) to (B, L1, D)
         k, v = self.to_kv(x).chunk(2, dim=-1)  # (B, L2, D1) to twice (B, L2, D)
-        q, k, v = map(lambda t: rearrange(t, "b l (h d) -> b h l d", h=h), (q, k, v))
-
-        out = F.scaled_dot_product_attention(q, k, v)
-        out = rearrange(out, "B H L1 D -> B L1 (H D)")  # (B, L1, D)
+        
+        # Apply LN before (!) splitting the heads.
+        k = self.ln_k(k)
+        q = self.ln_q(q)
+        
+        attn_dropout = self.attn_drop if self.training else 0.0
+        
+        use_flash_attn = latents.dtype in [torch.float16, torch.bfloat16]
+        if self.disable_flashattention or self.flash_attn_func is None:
+            use_flash_attn = False
+        if use_flash_attn:
+            if latents.dtype in [torch.bfloat16, torch.float16]: ## layerNorm converts fp16 back to fp32, which is not supported by flash attention
+                k = k.to(latents.dtype)
+                q = q.to(latents.dtype)
+                
+            ## flash attention
+            q, k, v = map(lambda t: rearrange(t, "b l (h d) -> b l h d", h=h), (q, k, v)) 
+            b = q.shape[0]
+            b_lim = 40_000 # flash attention has some significantly lower limit on tensor size that throws "RuntimeError: CUDA error: invalid configuration argument". Slicing the tensor into smaller batches to avoid this error.
+            if b < b_lim:
+                out = self.flash_attn_func(q, k, v, dropout_p=attn_dropout)
+            else:
+                out = torch.empty_like(q)  
+                for i in range(0, b, b_lim):
+                    q_batch, k_batch, v_batch = q[i:i+b_lim], k[i:i+b_lim], v[i:i+b_lim]
+                    out[i:i+b_lim] = self.flash_attn_func(q_batch, k_batch, v_batch, dropout_p=attn_dropout)
+                    
+            # out = flash_attn_func(q,k,v)
+            out = rearrange(out, "B L H D -> B L (H D)")  # (B, L1, D)
+        else:
+            ## normal attention
+            q, k, v = map(lambda t: rearrange(t, "b l (h d) -> b h l d", h=h), (q, k, v)) 
+            b_lim = 40_000
+            if q.shape[0] < b_lim:
+                out = F.scaled_dot_product_attention(q, k, v, dropout_p=attn_dropout)
+            else:
+                out = torch.empty_like(q)
+                for i in range(0, q.shape[0], b_lim):
+                    q_batch, k_batch, v_batch = q[i:i+b_lim], k[i:i+b_lim], v[i:i+b_lim]
+                    out[i:i+b_lim] = F.scaled_dot_product_attention(q_batch, k_batch, v_batch, dropout_p=attn_dropout)
+            out = rearrange(out, "B H L1 D -> B L1 (H D)")  # (B, L1, D)
+            
         return self.to_out(out)  # (B, L1, Latent_D)
 
 
@@ -152,6 +219,8 @@ class PerceiverResampler(nn.Module):
         drop: float = 0.0,
         residual_latent: bool = True,
         ln_eps: float = 1e-5,
+        ln_k_q: bool = False,
+        disable_flashattention: bool = False,
     ) -> None:
         """Initialise.
 
@@ -168,13 +237,15 @@ class PerceiverResampler(nn.Module):
                 Defaults to `True`.
             ln_eps (float, optional): Epsilon in the layer normalisation layers. Defaults to
                 `1e-5`.
+            ln_k_q (bool, optional): Apply an extra layer norm. to the keys and queries of the first
+                resampling layer. Defaults to `False`.
         """
         super().__init__()
 
         self.residual_latent = residual_latent
         self.layers = nn.ModuleList([])
         mlp_hidden_dim = int(latent_dim * mlp_ratio)
-        for _ in range(depth):
+        for i in range(depth):
             self.layers.append(
                 nn.ModuleList(
                     [
@@ -183,6 +254,8 @@ class PerceiverResampler(nn.Module):
                             context_dim=context_dim,
                             head_dim=head_dim,
                             num_heads=num_heads,
+                            ln_k_q=ln_k_q if i == 0 else False,
+                            disable_flashattention=disable_flashattention,
                         ),
                         MLP(dim=latent_dim, hidden_features=mlp_hidden_dim, dropout=drop),
                         nn.LayerNorm(latent_dim, eps=ln_eps),

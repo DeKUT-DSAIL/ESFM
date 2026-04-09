@@ -6,6 +6,10 @@ Code adapted from
 
 """
 
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 import itertools
 from datetime import timedelta
 from functools import lru_cache
@@ -15,12 +19,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from timm.models.layers import DropPath, to_3tuple
+def versiontuple(v):
+    return tuple(map(int, (v.split("."))))
+import timm
+if versiontuple(timm.__version__) > versiontuple("0.6.13"):
+    from timm.layers import DropPath, to_3tuple
+else:
+    from timm.models.layers import DropPath, to_3tuple
 
-from aurora.model.film import AdaptiveLayerNorm
-from aurora.model.fourier import lead_time_expansion
-from aurora.model.lora import LoRAMode, LoRARollout
-from aurora.model.util import init_weights, maybe_adjust_windows
+from esfm.model.film import AdaptiveLayerNorm
+from esfm.model.fourier import lead_time_expansion
+from esfm.model.lora import LoRAMode, LoRARollout
+from esfm.model.util import init_weights, maybe_adjust_windows
 
 __all__ = ["Swin3DTransformerBackbone"]
 
@@ -87,6 +97,8 @@ class WindowAttention(nn.Module):
         lora_steps: int = 40,
         lora_mode: LoRAMode = "single",
         use_lora: bool = False,
+        disable_flashattention: bool = False,
+        adding_qk_norm: bool = False,
     ) -> None:
         """Initialise.
 
@@ -104,8 +116,10 @@ class WindowAttention(nn.Module):
             lora_alpha (int, optional): LoRA alpha. Defaults to `8`.
             lora_dropout (float, optional): LoRA drop-out rate. Defaults to `0.0`.
             lora_steps (int, optional): Maximum number of LoRA roll-out steps. Defaults to `40`.
-            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps,
-                and `"all"` uses a different LoRA for every roll-out step. Defaults to `"single"`.
+            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps
+                from the second step onward, and `"all"` uses a different LoRA for every roll-out
+                step from the second step onward. LoRA is zeroed out at step 0 in both modes.
+                Defaults to `"single"`.
             use_lora (bool, optional): Enable LoRA. By default, LoRA is disabled.
         """
         super().__init__()
@@ -120,6 +134,22 @@ class WindowAttention(nn.Module):
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.disable_flashattention = disable_flashattention
+        self.flash_attn_qkvpacked_func = None
+        self.adding_qk_norm = adding_qk_norm
+
+        if not disable_flashattention:
+            try:
+                from flash_attn import flash_attn_qkvpacked_func  # type: ignore[import-not-found]
+                self.flash_attn_qkvpacked_func = flash_attn_qkvpacked_func
+            except ImportError:
+                print("Flash Attention is not installed. Falling back to regular attention.")
+                self.disable_flashattention = True
+
+        if self.adding_qk_norm:
+            # add layerNorm to the q and k tensors to stabilize the attention
+            self.q_ln = nn.LayerNorm(self.head_dim)
+            self.k_ln = nn.LayerNorm(self.head_dim)
 
         if use_lora:
             self.lora_proj = LoRARollout(
@@ -152,8 +182,26 @@ class WindowAttention(nn.Module):
         qkv = self.qkv(x) + self.lora_qkv(x, rollout_step)
         qkv = rearrange(qkv, "B N (qkv H D) -> qkv B H N D", H=self.num_heads, qkv=3)
         q, k, v = qkv[0], qkv[1], qkv[2]
-        attn_dropout = self.attn_drop if self.training else 0.0
 
+        if self.adding_qk_norm:
+            # get the original dtype and shape
+            orig_dtype = q.dtype
+
+            # Apply the LayerNorm similar to https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/transformer/attention.py#L922
+            q_ln = self.q_ln(q)
+            k_ln = self.k_ln(k)
+
+            # Ensure the original dtype
+            q_ln = q_ln.to(orig_dtype)
+            k_ln = k_ln.to(orig_dtype)
+
+            # Reconstructure the qkv with normalized q and k
+            qkv = torch.stack([q_ln, k_ln, v], dim=0)
+
+        attn_dropout = self.attn_drop if self.training else 0.0
+        use_flash_attn = True
+        if self.disable_flashattention or self.flash_attn_qkvpacked_func is None:
+            use_flash_attn = False
         if mask is not None:
             nW = mask.shape[0]
             q, k, v = map(lambda t: rearrange(t, "(B nW) H N D -> B nW H N D", nW=nW), (q, k, v))
@@ -161,7 +209,16 @@ class WindowAttention(nn.Module):
             x = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=attn_dropout)
             x = rearrange(x, "B nW H N D -> (B nW) H N D")
         else:
-            x = F.scaled_dot_product_attention(q, k, v, dropout_p=attn_dropout)
+            if use_flash_attn:
+                ### use flash-attn ###
+                qkv = rearrange(qkv, "qkv B H N D -> B N qkv H D")
+                x = self.flash_attn_qkvpacked_func(qkv, dropout_p=attn_dropout) # qkv: (batch_size, seqlen, 3, nheads, headdim)
+                x = rearrange(x, "B N H D -> B H N D")
+                ### use flash-attn ###
+            else:
+                ## use vanilla attn ###
+                x = F.scaled_dot_product_attention(q, k, v, dropout_p=attn_dropout)
+                ## use vanilla attn ###
 
         x = rearrange(x, "B H N D -> B N (H D)")
         x = self.proj(x) + self.lora_proj(x, rollout_step)
@@ -378,6 +435,8 @@ class Swin3DTransformerBlock(nn.Module):
         lora_steps: int = 40,
         lora_mode: LoRAMode = "single",
         use_lora: bool = False,
+        disable_flashattention: bool = False,
+        adding_qk_norm: bool = False,
     ) -> None:
         """Initialise.
 
@@ -398,10 +457,12 @@ class Swin3DTransformerBlock(nn.Module):
             act_layer (type, optional): Activation function to use. Will be instantiated as
                 `act_layer()`. Defaults to `torch.nn.GELU`.
             scale_bias (float, optional): Scale bias for
-                :class:`aurora.model.film.AdaptiveLayerNorm`. Defaults to `0`.
+                :class:`esfm.model.film.AdaptiveLayerNorm`. Defaults to `0`.
             lora_steps (int, optional): Maximum number of LoRA roll-out steps. Defaults to `40`.
-            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps,
-                and `"all"` uses a different LoRA for every roll-out step. Defaults to `"single"`.
+            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps
+                from the second step onward, and `"all"` uses a different LoRA for every roll-out
+                step from the second step onward. LoRA is zeroed out at step 0 in both modes.
+                Defaults to `"single"`.
             use_lora (bool): Enable LoRA. By default, LoRA is disabled.
         """
         super().__init__()
@@ -422,6 +483,8 @@ class Swin3DTransformerBlock(nn.Module):
             lora_steps=lora_steps,
             use_lora=use_lora,
             lora_mode=lora_mode,
+            disable_flashattention=disable_flashattention,
+            adding_qk_norm=adding_qk_norm,
         )
 
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
@@ -441,6 +504,7 @@ class Swin3DTransformerBlock(nn.Module):
         res: tuple[int, int, int],
         rollout_step: int,
         warped: bool = True,
+        is_global_observation: bool = True,
     ) -> torch.Tensor:
         """Run the block.
 
@@ -465,7 +529,7 @@ class Swin3DTransformerBlock(nn.Module):
         x = x.view(B, C, H, W, D)
 
         # Perform cyclic shift.
-        if not all(s == 0 for s in ss):
+        if not all(s == 0 for s in ss) and is_global_observation:
             shifted_x = torch.roll(x, shifts=(-ss[0], -ss[1], -ss[2]), dims=(1, 2, 3))
             attn_mask, _ = compute_3d_shifted_window_mask(
                 C, H, W, ws, ss, x.device, x.dtype, warped=warped
@@ -473,7 +537,6 @@ class Swin3DTransformerBlock(nn.Module):
         else:
             shifted_x = x
             attn_mask = None
-
         # Pad the input to multiple of window size.
         pad_size = ((-C) % ws[0], (-H) % ws[1], (-W) % ws[2])
         shifted_x = pad_3d(shifted_x, pad_size)
@@ -494,7 +557,7 @@ class Swin3DTransformerBlock(nn.Module):
         shifted_x = crop_3d(shifted_x, pad_size)
 
         # Reverse the cyclic shift.
-        if not all(s == 0 for s in ss):
+        if not all(s == 0 for s in ss) and is_global_observation:
             x = torch.roll(shifted_x, shifts=(ss[0], ss[1], ss[2]), dims=(1, 2, 3))
         else:
             x = shifted_x
@@ -631,6 +694,8 @@ class BasicLayer3D(nn.Module):
         lora_steps: int = 40,
         lora_mode: LoRAMode = "single",
         use_lora: bool = False,
+        disable_flashattention: bool = False,
+        adding_qk_norm: bool = False,
     ) -> None:
         """Initialise.
 
@@ -650,10 +715,12 @@ class BasicLayer3D(nn.Module):
             downsample (PatchMerging3D, optional): Downsampling layer. Defaults to no downsampling.
             upsample (PatchSplitting3D, optional): Upsampling layer. Defaults to no upsampling.
             scale_bias (float, optional): Scale bias for
-                :class:`aurora.model.film.AdaptiveLayerNorm`. Default: 0
+                :class:`esfm.model.film.AdaptiveLayerNorm`. Default: 0
             lora_steps (int, optional): Maximum number of LoRA roll-out steps. Defaults to `40`.
-            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps,
-                and `"all"` uses a different LoRA for every roll-out step. Defaults to `"single"`.
+            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps
+                from the second step onward, and `"all"` uses a different LoRA for every roll-out
+                step from the second step onward. LoRA is zeroed out at step 0 in both modes.
+                Defaults to `"single"`.
             use_lora (bool): Enable LoRA. By default, LoRA is disabled.
         """
         super().__init__()
@@ -683,6 +750,8 @@ class BasicLayer3D(nn.Module):
                     use_lora=use_lora,
                     lora_steps=lora_steps,
                     lora_mode=lora_mode,
+                    disable_flashattention=disable_flashattention,
+                    adding_qk_norm=adding_qk_norm,
                 )
                 for i in range(depth)
             ]
@@ -705,6 +774,7 @@ class BasicLayer3D(nn.Module):
         res: tuple[int, int, int],
         crop: tuple[int, int, int] = (0, 0, 0),
         rollout_step: int = 0,
+        is_global_observation: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Run the basic layer.
 
@@ -719,7 +789,7 @@ class BasicLayer3D(nn.Module):
             torch.Tensor: Output tokens.
         """
         for blk in self.blocks:
-            x = blk(x, c, res, rollout_step)
+            x = blk(x, c, res, rollout_step, is_global_observation=is_global_observation)
         if self.downsample is not None:
             x_scaled = self.downsample(x, res)
             return x_scaled, x
@@ -763,6 +833,8 @@ class Swin3DTransformerBackbone(nn.Module):
         lora_steps: int = 40,
         lora_mode: LoRAMode = "single",
         use_lora: bool = False,
+        disable_flashattention: bool = False,
+        adding_qk_norm: bool = False,
     ) -> None:
         """
         Args:
@@ -784,8 +856,10 @@ class Swin3DTransformerBackbone(nn.Module):
             attn_drop_rate (float): Attention drop-out rate. Defaults to `0.1`.
             drop_path_rate (float): Stochastic depth rate. Defaults to `0.1`.
             lora_steps (int, optional): Maximum number of LoRA roll-out steps. Defaults to `40`.
-            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps,
-                and `"all"` uses a different LoRA for every roll-out step. Defaults to `"single"`.
+            lora_mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps
+                from the second step onward, and `"all"` uses a different LoRA for every roll-out
+                step from the second step onward. LoRA is zeroed out at step 0 in both modes.
+                Defaults to `"single"`.
             use_lora (bool): Enable LoRA. By default, LoRA is disabled.
         """
         super().__init__()
@@ -826,6 +900,8 @@ class Swin3DTransformerBackbone(nn.Module):
                 use_lora=use_lora,
                 lora_steps=lora_steps,
                 lora_mode=lora_mode,
+                disable_flashattention=disable_flashattention,
+                adding_qk_norm=adding_qk_norm,
             )
             self.encoder_layers.append(layer)
 
@@ -848,6 +924,8 @@ class Swin3DTransformerBackbone(nn.Module):
                 use_lora=use_lora,
                 lora_steps=lora_steps,
                 lora_mode=lora_mode,
+                disable_flashattention=disable_flashattention,
+                adding_qk_norm=adding_qk_norm,
             )
             self.decoder_layers.append(layer)
 
@@ -882,6 +960,7 @@ class Swin3DTransformerBackbone(nn.Module):
         lead_time: timedelta,
         rollout_step: int,
         patch_res: tuple[int, int, int],
+        is_global_observation: bool = True,
     ) -> torch.Tensor:
         """Run the backbone.
 
@@ -910,7 +989,7 @@ class Swin3DTransformerBackbone(nn.Module):
 
         skips = []
         for i, layer in enumerate(self.encoder_layers):
-            x, x_unscaled = layer(x, c, all_enc_res[i], rollout_step=rollout_step)
+            x, x_unscaled = layer(x, c, all_enc_res[i], rollout_step=rollout_step, is_global_observation=is_global_observation)
             skips.append(x_unscaled)
         for i, layer in enumerate(self.decoder_layers):
             index = self.num_decoder_layers - i - 1
@@ -920,6 +999,7 @@ class Swin3DTransformerBackbone(nn.Module):
                 all_enc_res[index],
                 padded_outs[index - 1],
                 rollout_step=rollout_step,
+                is_global_observation=is_global_observation,
             )
 
             if 0 < i < self.num_decoder_layers - 1:

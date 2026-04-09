@@ -1,0 +1,88 @@
+default:
+    surf_var_weights: {
+                'msl': 1.5,
+                '10u': 0.77,
+                '10v': 0.66,
+                '2t': 3.0,
+                'sst': 1.0,
+                'ci': 1.0,
+                'co2': 1.0
+            }
+    atmos_var_weights: {
+                'z': 2.8,
+                'q': 0.78,
+                't': 1.7,
+                'u': 0.87,
+                'v': 0.6
+            }
+with_climate:
+    surf_var_weights: {
+                'msl': 1.5,
+                '10u': 0.77,
+                '10v': 0.66,
+                '2t': 3.0,
+                'tp_mswep': 1.0,
+                'tp': 1.0,
+                'pe': 1.0,
+                'r': 1.0,
+                'tws_gou': 1.0,
+                'sst': 1.0,
+                'ci': 1.0,
+                'co2': 1.0
+            }
+    atmos_var_weights: {
+                'z': 2.8,
+                'q': 0.78,
+                't': 1.7,
+                'u': 0.87,
+                'v': 0.6
+            }
+with_climate_reduce_cf:
+    surf_var_weights: {
+                'msl': 1.5,
+                '10u': 0.77,
+                '10v': 0.66,
+                '2t': 3.0,
+                'tp_mswep': 1.0,
+                'tp': 1.0,
+                'pe': 1.0,
+                'r': 1.0,
+                'tws_gou': 1.0,
+                'sst': 0.05,
+                'ci': 0.05,
+                'co2': 0.05
+            }
+    atmos_var_weights: {
+                'z': 2.8,
+                'q': 0.78,
+                't': 1.7,
+                'u': 0.87,
+                'v': 0.6
+            }
+modis: 
+    surf_var_weights: {
+                'ir_mod': 10.0,
+                'nir_mod': 10.0,
+                'ir_myd': 10.0,
+                'nir_myd': 10.0,
+            }
+    atmos_var_weights: {
+                'q': 0.78,
+                't': 1.7,
+            }
+
+station11k:
+    surf_var_weights: {
+                'pa': 2.8,
+                'msl': 1.5,
+                '2t': 3.0,
+                'dt': 1.0,
+                '10u': 1.0,
+                '10v': 1.0,
+                'wd': 0.1,
+                'ws': 0.1,
+                'ts': 0.0 
+            }
+    atmos_var_weights: {
+                '<N/A>': 0.0
+            }

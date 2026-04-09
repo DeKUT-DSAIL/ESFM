@@ -1,12 +1,24 @@
 """Copyright (c) Microsoft Corporation. Licensed under the MIT license."""
 
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 import math
 from typing import Optional
+from einops import rearrange
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers.helpers import to_2tuple
+
+import timm
+def versiontuple(v):
+    return tuple(map(int, (v.split("."))))
+if versiontuple(timm.__version__) > versiontuple("0.6.13"):
+    from timm.layers.helpers import to_2tuple
+else:
+    from timm.models.layers.helpers import to_2tuple
 
 __all__ = ["LevelPatchEmbed"]
 
@@ -23,6 +35,7 @@ class LevelPatchEmbed(nn.Module):
         history_size: int = 1,
         norm_layer: Optional[nn.Module] = None,
         flatten: bool = True,
+        bias_per_variable: bool = False,
     ) -> None:
         """Initialise.
 
@@ -42,6 +55,7 @@ class LevelPatchEmbed(nn.Module):
         self.kernel_size = (history_size,) + to_2tuple(patch_size)
         self.flatten = flatten
         self.embed_dim = embed_dim
+        self.bias_per_variable = bias_per_variable
 
         self.weights = nn.ParameterDict(
             {
@@ -51,7 +65,15 @@ class LevelPatchEmbed(nn.Module):
                 for name in var_names
             }
         )
-        self.bias = nn.Parameter(torch.empty(embed_dim))
+        if bias_per_variable:
+            self.bias = nn.ParameterDict(
+                {
+                    name: nn.Parameter(torch.empty(embed_dim))
+                    for name in var_names
+                }
+            )
+        else:
+            self.bias = nn.Parameter(torch.empty(embed_dim)) 
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
         self.init_weights()
@@ -74,7 +96,11 @@ class LevelPatchEmbed(nn.Module):
         fan_in, _ = nn.init._calculate_fan_in_and_fan_out(next(iter(self.weights.values())))
         if fan_in != 0:
             bound = 1 / math.sqrt(fan_in)
-            nn.init.uniform_(self.bias, -bound, bound)
+            if self.bias_per_variable:
+                for var_name in self.var_names:
+                    nn.init.uniform_(self.bias[var_name], -bound, bound)
+            else:
+                nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x: torch.Tensor, var_names: tuple[str, ...]) -> torch.Tensor:
         """Run the embedding.
@@ -113,6 +139,70 @@ class LevelPatchEmbed(nn.Module):
         if self.flatten:
             proj = proj.reshape(B, self.embed_dim, -1)  # (B, D, L)
             proj = proj.transpose(1, 2)  # (B, L, D)
+
+        x = self.norm(proj)
+        return x
+
+
+
+class VariablePatchEmbed(LevelPatchEmbed):
+    def __init__(self, nan_token = None, *args, **kwargs) -> None:
+        self.bias_per_variable = True
+        super().__init__(bias_per_variable=self.bias_per_variable, *args, **kwargs)
+        self.nan_token = nan_token
+
+    def forward(self, x: torch.Tensor, var_names: tuple[str, ...]) -> torch.Tensor:
+        """Run the embedding.
+
+        Args:
+            x (:class:`torch.Tensor`): Tensor to embed of a shape of `(B, V, T, H, W)`.
+            var_names (tuple[str, ...]): Names of the variables in `x`. The length should be equal
+                to `V`.
+
+        Returns:
+            :class:`torch.Tensor`: Embedded tensor a shape of `(B, L, D]) if flattened,
+                where `L = H * W / P^2`. Otherwise, the shape is `(B, D, H', W')`.
+
+        """
+        B, V, T, H, W = x.shape
+        assert len(var_names) == V, f"{V} != {len(var_names)}."
+        assert self.kernel_size[0] >= T, f"{T} > {self.kernel_size[0]}."
+        assert H % self.kernel_size[1] == 0, f"{H} % {self.kernel_size[0]} != 0."
+        assert W % self.kernel_size[2] == 0, f"{W} % {self.kernel_size[1]} != 0."
+        assert len(set(var_names)) == len(var_names), f"{var_names} contains duplicates."
+
+        # Adjust the stride if history is smaller than maximum.
+        stride = (T,) + self.kernel_size[1:]
+
+        proj = []
+        for i, v in enumerate(var_names):
+            x2 = x[:, i:i+1]
+            # Slice weight to match actual time dimension in input
+            weight = self.weights[v][:, :, :T, ...]
+            if self.bias_per_variable:
+                bias = self.bias[v]
+            else:
+                bias = self.bias
+
+            # Create a mask for NaNs using the sliced weight shape
+            nan_mask = F.conv3d(
+                x2, 
+                torch.ones(1, *weight.shape[1:], device=x2.device), 
+                stride=stride
+            ).isnan()
+            prj = F.conv3d(x2, weight, bias, stride=stride)
+            # Replace NaNs in the output with the learnable token
+            prj = torch.where(
+                nan_mask, 
+                self.nan_token[None, :, None, None, None].expand(prj.shape), 
+                prj
+            )
+            proj.append(prj)
+
+        proj = torch.concatenate(proj, dim=2) #shape: (B, D, V, H/P, W/P)
+ 
+        if self.flatten:
+            proj = rearrange(proj, 'B D V H W -> B V (H W) D')  # (B, V, L, D)
 
         x = self.norm(proj)
         return x

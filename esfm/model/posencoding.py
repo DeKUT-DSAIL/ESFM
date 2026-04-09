@@ -5,14 +5,28 @@ Parts of this code are inspired by
     https://github.com/microsoft/ClimaX/blob/6d5d354ffb4b91bb684f430b98e8f6f8af7c7f7c/src/climax/utils/pos_embed.py
 """
 
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 import torch
 import torch.nn.functional as F
-from timm.models.layers.helpers import to_2tuple
+import timm
+def versiontuple(v):
+    return tuple(map(int, (v.split("."))))
+if versiontuple(timm.__version__) > versiontuple("0.6.13"):
+    from timm.layers.helpers import to_2tuple
+else:
+    from timm.models.layers.helpers import to_2tuple
 
-from aurora.model.fourier import FourierExpansion
+from esfm.model.fourier import FourierExpansion
 
 __all__ = ["pos_scale_enc"]
 
+from config import parse_known_args
+args, _ = parse_known_args()
+if hasattr(args, 'grid_deg_delta'):
+    grid_deg_delta = args.grid_deg_delta
 
 def patch_root_area(
     lat_min: torch.Tensor,
@@ -48,11 +62,15 @@ def patch_root_area(
     assert (lon_max <= 360.0).all() and (lon_min <= 360.0).all()
     assert (lon_max >= 0.0).all() and (lon_min >= 0.0).all()
     area = (
-        6371**2
+        6371.**2.
         * torch.pi
         * (torch.sin(torch.deg2rad(lat_max)) - torch.sin(torch.deg2rad(lat_min)))
         * (torch.deg2rad(lon_max) - torch.deg2rad(lon_min))
     )
+    precision_threshold = -5e-6 # allow for small negative values due to numerical precision issues
+    if (area < precision_threshold).any():
+        raise ValueError("Found significant negative values in area.")
+    area = torch.clamp(area, min=2.23e-6) # min is 1e-5 deg in both lat and lon: deg2rad(1e-5)^2 * R^2 * pi = 2.23e-6. roughly 1.1m2 at the equator 
 
     assert (area > 0.0).all()
     return torch.sqrt(area)
@@ -75,9 +93,9 @@ def pos_scale_enc_grid(
         grid (torch.Tensor): Latitude-longitude grid of dimensions `(B, 2, H, W)`. `grid[:, 0]`
             should be the latitudes of `grid[:, 1]` should be the longitudes.
         patch_dims (tuple): Patch dimensions. Different x-values and y-values are supported.
-        pos_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
+        pos_expansion (:class:`esfm.model.fourier.FourierExpansion`): Fourier expansion for the
             latitudes and longitudes.
-        scale_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
+        scale_expansion (:class:`esfm.model.fourier.FourierExpansion`): Fourier expansion for the
             patch areas.
 
     Returns:
@@ -98,13 +116,21 @@ def pos_scale_enc_grid(
     grid_lat_min = -F.max_pool2d(-grid[:, 0], patch_dims)
     grid_lon_max = F.max_pool2d(grid[:, 1], patch_dims)
     grid_lon_min = -F.max_pool2d(-grid[:, 1], patch_dims)
+    # Detect 1*1 patch and nudge max bounds so lat_max > lat_min and lon_max > lon_min
+    if patch_dims == (1, 1):
+        eps = grid_deg_delta
+        grid_lat_max, grid_lon_max = grid_lat_max.double() + eps, grid_lon_max.double() + eps
     root_area = patch_root_area(grid_lat_min, grid_lon_min, grid_lat_max, grid_lon_max)
+    root_area = root_area.float() #cast back to fp32
 
     # Use half of dimensions for the latitudes of the midpoints of the patches and the other
     # half for the longitudes. Before computing the encodings, flatten over the spatial dimensions.
     B = grid_h.shape[0]
     encode_h = pos_expansion(grid_h.reshape(B, -1), encode_dim // 2)  # (B, L, D/2)
-    encode_w = pos_expansion(grid_w.reshape(B, -1), encode_dim // 2)  # (B, L, D/2)
+    #clip grid_w values >=0 && grid_w <pos_expansion.lower to pos_expansion.lower.
+    grid_w_ = grid_w.reshape(B, -1)
+    grid_w_[(grid_w_ >= 0) & (grid_w_ < pos_expansion.lower)] = pos_expansion.lower
+    encode_w = pos_expansion(grid_w_, encode_dim // 2)  # (B, L, D/2)
     pos_encode = torch.cat((encode_h, encode_w), axis=-1)  # (B, L, D)
 
     # No need to split things up for the scale encoding.
@@ -160,9 +186,9 @@ def pos_scale_enc(
         lon (torch.Tensor): Longitudes, `W`. Can be either a vector or a matrix.
         patch_dims (Union[list, tuple]): Patch dimensions. Different x-values and y-values are
             supported.
-        pos_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
+        pos_expansion (:class:`esfm.model.fourier.FourierExpansion`): Fourier expansion for the
             latitudes and longitudes.
-        scale_expansion (:class:`aurora.model.fourier.FourierExpansion`): Fourier expansion for the
+        scale_expansion (:class:`esfm.model.fourier.FourierExpansion`): Fourier expansion for the
             patch areas.
 
     Returns:

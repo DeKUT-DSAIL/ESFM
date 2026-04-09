@@ -18,8 +18,10 @@ from esfm.model.util import (
     init_weights,
     unpatchify,
 )
+from esfm.model.film import AdaptiveLayerNorm
 
 __all__ = ["Perceiver3DDecoder"]
+
 
 def get_2d_sincos_pos_embed_pytorch(embed_dim, grid_h, grid_w, device):
     """Generate 2D sine-cosine positional embeddings.
@@ -72,7 +74,8 @@ class Perceiver3DDecoder(nn.Module):
         patch_tokenizer_identifier=None, 
         disable_flashattention: bool = False,
         add_token_pos_embedding: bool = False,
-        **kwargs
+        num_max_ensembles: int = 1000,
+        adaln_scale_bias: float = 1.0
     ) -> None:
         """Initialise.
 
@@ -93,6 +96,8 @@ class Perceiver3DDecoder(nn.Module):
             perceiver_ln_eps (float, optional): Layer norm. epsilon for the Perceiver blocks.
                 Defaults to `1e-5`.
             add_token_pos_embedding: Whether to add token positional embeddings. Defaults to `False`.
+            num_max_ensembles: Maximum number of ensembles for embedding layer. Defaults to `1000`.
+            adaln_scale_bias: Scale bias for the adaptive layer normalisation. Defaults to `1.0`.
         """
         super().__init__()
 
@@ -103,6 +108,7 @@ class Perceiver3DDecoder(nn.Module):
         self.num_ensemble = num_ensemble
         self.patch_tokenizer_identifier = patch_tokenizer_identifier
         self.add_token_pos_embedding = add_token_pos_embedding
+        self.num_max_ensembles = num_max_ensembles
         if self.add_token_pos_embedding:
             self.cache_pos_embeddings = {} ## cache for pos embeddings for different grid sizes
 
@@ -118,7 +124,30 @@ class Perceiver3DDecoder(nn.Module):
             ln_eps=perceiver_ln_eps,
             disable_flashattention=disable_flashattention,
         )
-          
+        
+        if self.num_ensemble > 1: 
+            self.ensemble_cond_mlp_surf = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim, bias=True),
+                nn.SiLU(),
+                nn.Linear(embed_dim, embed_dim, bias=True),
+            )
+            self.ensemble_embedding_surf = nn.Embedding(num_max_ensembles, embed_dim)
+            self.ensemble_adaln_surf = AdaptiveLayerNorm(embed_dim, embed_dim, scale_bias=adaln_scale_bias) # adaLN-Zero
+            self.ensemble_cond_mlp_atmos = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim, bias=True),
+                nn.SiLU(),
+                nn.Linear(embed_dim, embed_dim, bias=True),
+            )
+            self.ensemble_embedding_atmos = nn.Embedding(num_max_ensembles, embed_dim)
+            self.ensemble_adaln_atmos = AdaptiveLayerNorm(embed_dim, embed_dim, scale_bias=adaln_scale_bias) # adaLN-Zero
+        else:
+            self.ensemble_cond_mlp_surf = nn.Identity()
+            self.ensemble_embedding_surf = nn.Identity()
+            self.ensemble_adaln_surf = nn.Identity()
+            self.ensemble_cond_mlp_atmos = nn.Identity()
+            self.ensemble_embedding_atmos = nn.Identity()
+            self.ensemble_adaln_atmos = nn.Identity()
+        
         # Create ensemble of heads for each variable
         self.surf_heads = nn.ModuleDict()
         self.atmos_heads = nn.ModuleDict()
@@ -127,13 +156,13 @@ class Perceiver3DDecoder(nn.Module):
             for name in surf_vars:
                 self.surf_heads[name] = nn.ModuleList([
                     nn.Linear(embed_dim, patch_size**2) 
-                    for _ in range(num_ensemble)
+                    for _ in range(1)
                 ])
 
             for name in atmos_vars:
                 self.atmos_heads[name] = nn.ModuleList([
                     nn.Linear(embed_dim, patch_size**2)
-                    for _ in range(num_ensemble)
+                    for _ in range(1)
                 ])
         else:
             # Create heads for each grid size input
@@ -144,13 +173,13 @@ class Perceiver3DDecoder(nn.Module):
                 for name in surf_vars:
                     self.surf_heads[key][name] = nn.ModuleList([
                         nn.Linear(embed_dim, patch_size**2) 
-                        for _ in range(num_ensemble)
+                        for _ in range(1)
                     ])
 
                 for name in atmos_vars:
                     self.atmos_heads[key][name] = nn.ModuleList([
                         nn.Linear(embed_dim, patch_size**2)
-                        for _ in range(num_ensemble)
+                        for _ in range(1)
                     ])
 
 
@@ -216,6 +245,17 @@ class Perceiver3DDecoder(nn.Module):
             grid_resolution_str = self.patch_tokenizer_identifier.get_resolution_str(batch.metadata.grid_resolution)
             surf_heads = self.surf_heads[grid_resolution_str]
             atmos_heads = self.atmos_heads[grid_resolution_str]
+            
+        # Create ensemble conditioning vector
+        ## Randomly sample self.num_ensemble integers between 0 and self.num_max_ensembles-1 for each batch element. This allows training self.num_max_ensembles ensembles.
+        ensemble_indices = torch.randperm(self.num_max_ensembles, device=x.device)[:self.num_ensemble].sort()[0]
+        # ensemble_indices = torch.arange(self.num_ensemble, device=x.device) 
+        ensemble_embed_surf_ = self.ensemble_embedding_surf(ensemble_indices)  # (E, D)
+        ensemble_embed_surf = self.ensemble_cond_mlp_surf(ensemble_embed_surf_)  # (E, D)
+        ensemble_embed_atmos_ = self.ensemble_embedding_atmos(ensemble_indices)  # (E, D)
+        ensemble_embed_atmos = self.ensemble_cond_mlp_atmos(ensemble_embed_atmos_)  # (E, D)
+
+            
         # Unwrap the latent level dimension.
         x = rearrange(
             x,
@@ -241,19 +281,22 @@ class Perceiver3DDecoder(nn.Module):
             x = x + pos_embedding # broadcast add
 
         if len(surf_vars_output) > 0:
-            # Run ensemble predictions for surface variables
             surf_preds_ensemble = []
-            for i in range(self.num_ensemble):
-                x_surf = torch.stack([
-                    surf_heads[name][i](x[..., :1, :]) 
+            for i_ens in range(self.num_ensemble):
+                x_ = x[...,:1,:] # (B, (HW), C=1, D)
+                if self.num_ensemble > 1: # use FiLM layer only if num_ensemble > 1
+                    x_ = x[...,:1,:].reshape(x.size(0), -1, x.size(-1)) # (B, (HW), C=1, D) -- >(B, L=(HWC), D)
+                    cond_ens = ensemble_embed_surf[i_ens].unsqueeze(0).expand(B, -1) # (D,) --> (B, D)
+                    x_ens = x_ + self.ensemble_adaln_surf(x_,cond_ens) # (B, L=HWC, D)
+                    x_ = x_ens.reshape(B, patch_res[1]*patch_res[2], 1, self.embed_dim) # (B, (HW), C=1, D)
+                x_ens = torch.stack([
+                    surf_heads[name][0](x_)  # [B, H*W, 1, patch_size**2]
                     for name in surf_vars_output
-                ], dim=-1)
-                x_surf = x_surf.reshape(*x_surf.shape[:3], -1)
-                surf_preds = unpatchify(x_surf, len(surf_vars_output), H, W, patch_size)
-                surf_preds = surf_preds.squeeze(2) # [B, V_S, H, W]
-
-                surf_preds_ensemble.append(surf_preds)
-            # Stack ensemble predictions
+                ], dim=-1) # shape: [B, H*W, 1, patch_size**2, num_vars]
+                x_ens = x_ens.reshape(*x_ens.shape[:3], -1) # [B, H*W, 1, patch_size**2 * num_vars]
+                surf_preds_ens = unpatchify(x_ens, len(surf_vars_output), H, W, patch_size) # [B, L=HW, C=1, P*P*V_S] --> [B, V_S, C=1, H, W]
+                surf_preds_ens = surf_preds_ens.squeeze(2) # [B, V_S, H, W]
+                surf_preds_ensemble.append(surf_preds_ens)
             surf_preds_all = torch.stack(surf_preds_ensemble, dim=1)  # [B, E, V_S, H, W]
 
 
@@ -263,23 +306,25 @@ class Perceiver3DDecoder(nn.Module):
         ).to(dtype=x.dtype)
         levels_embed = self.atmos_levels_embed(atmos_levels_encode)
         levels_embed = levels_embed.expand(B, x.size(1), -1, -1)
-        x_atmos = self.deaggregate_levels(levels_embed, x[..., 1:, :])
+        x_atmos = self.deaggregate_levels(levels_embed, x[..., 1:, :]) # shape: B (H W) C=3 D --> [B, L=HW, C=[13], D]
 
-        # Run ensemble predictions for atmospheric variables
+        # # Stack ensemble predictions
         atmos_preds_ensemble = []
-        for i in range(self.num_ensemble):
-            x_atmos_i = torch.stack([
-                atmos_heads[name][i](x_atmos) 
+        for i_ens in range(self.num_ensemble):
+            x_atmos_ = x_atmos
+            if self.num_ensemble > 1: # use FiLM layer only if num_ensemble > 1
+                cond_ens = ensemble_embed_atmos[i_ens].unsqueeze(0).expand(B, -1) # (D,) --> (B, D)
+                x_atmos_ = x_atmos.reshape(x_atmos.size(0), -1, x_atmos.size(-1)) # [B, L=HW, C=[13], D] --> (B, (HW), C=levels, D) -- >(B, L=(HWC), D)
+                x_atmos_ens = x_atmos_ + self.ensemble_adaln_atmos(x_atmos_,cond_ens) # (B, L=HWC, D)
+                x_atmos_ = x_atmos_ens.reshape(B, patch_res[1]*patch_res[2], x_atmos.size(2), self.embed_dim) # (B, (HW), C=levels, D)
+            x_atmos_ens = torch.stack([
+                atmos_heads[name][0](x_atmos_)  # [B, H*W, levels, patch_size**2]
                 for name in atmos_vars_output
-            ], dim=-1)
-            
-            x_atmos_i = x_atmos_i.reshape(*x_atmos_i.shape[:3], -1)
-            atmos_preds = unpatchify(x_atmos_i, len(atmos_vars_output), H, W, patch_size) # [B, V_A, L, H, W]
-
-            atmos_preds_ensemble.append(atmos_preds)
-        
-        # Stack ensemble predictions
-        atmos_preds_all = torch.stack(atmos_preds_ensemble, dim=1)  # [B, E, V_A, H, W]
+            ], dim=-1) # shape: [B, H*W, levels, patch_size**2, num_vars]
+            x_atmos_ens = x_atmos_ens.reshape(*x_atmos_ens.shape[:3], -1) # [B, H*W, levels, patch_size**2 * num_vars]
+            atmos_preds_ens = unpatchify(x_atmos_ens, len(atmos_vars_output), H, W, patch_size) # [B, V_A, levels, H, W]
+            atmos_preds_ensemble.append(atmos_preds_ens)
+        atmos_preds_all = torch.stack(atmos_preds_ensemble, dim=1)  # [B, E, V_A, levels, H, W]
 
         all_preds_batch = Batch(
             {v: surf_preds_all[:, :, i] for i, v in enumerate(surf_vars_output)},
@@ -299,8 +344,8 @@ class Perceiver3DDecoder(nn.Module):
                 atmos_vars_output=atmos_vars_output,
                 surf_vars_output=surf_vars_output,
                 atmos_levels_output=atmos_levels_output,
+                lead_time_seconds=batch.metadata.lead_time_seconds,
             ),
         )
-
-        #return mean_batch, std_batch, all_preds_batch  
+        
         return all_preds_batch

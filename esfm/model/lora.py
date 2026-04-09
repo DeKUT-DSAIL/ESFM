@@ -1,5 +1,9 @@
 """Copyright (c) Microsoft Corporation. Licensed under the MIT license."""
 
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 import math
 from typing import Literal
 
@@ -85,8 +89,10 @@ class LoRARollout(nn.Module):
             alpha (int, optional): Alpha. Defaults to `1`.
             dropout (float, optional): Drop-out rate. Defaults to `0.0`.
             max_steps (int, optional): Maximum number of roll-out steps. Defaults to `40`.
-            mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps,
-                and `"all"` uses a different LoRA for every roll-out step. Defaults to `"single"`.
+            mode (str, optional): Mode. `"single"` uses the same LoRA for all roll-out steps
+                from the second step onward, and `"all"` uses a different LoRA for every roll-out
+                step from the second step onward. In both modes, LoRA is zeroed out at step 0.
+                Defaults to `"single"`.
         """
         super().__init__()
 
@@ -113,6 +119,9 @@ class LoRARollout(nn.Module):
         assert step >= 0, f"Step must be non-negative, found {step}."
 
         if step >= self.max_steps:
+            return 0
+
+        if step == 0:
             return 0
 
         if self.mode == "single":

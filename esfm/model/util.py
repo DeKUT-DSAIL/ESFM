@@ -1,5 +1,9 @@
 """Copyright (c) Microsoft Corporation. Licensed under the MIT license."""
 
+# Copyright (c) 2026 ETH Zurich
+# Authors: see CONTRIBUTORS.md
+# Licensed under the MIT License. See the LICENSE file in the repository root.
+
 from typing import TypeVar
 
 import torch
