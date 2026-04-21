@@ -14,7 +14,7 @@ import numpy as np
 import yaml
 from natsort import natsorted
 
-DATA_PATH_PREFIX = '/capstor/store/cscs/'
+DATA_PATH_PREFIX = os.getenv("ESFM_DATA_PATH_PREFIX", "/capstor/store/cscs/").rstrip("/") + "/"
 def load_data(yaml_path, datasets_type):
     """Load datasets based on YAML configuration."""
     surf_vars, atmos_vars, static_vars = (), (), ()

@@ -5,7 +5,6 @@
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 import os
-import glob
 import sys
 import pickle
 import numpy as np
@@ -17,7 +16,7 @@ import torch.distributed as dist
 
 # Import FSDP and Mixed Precision from PyTorch
 import lightning as L
-from lightning.pytorch.callbacks import Callback, ModelCheckpoint, LearningRateMonitor
+from lightning.pytorch.callbacks import Callback, ModelCheckpoint, LearningRateMonitor, TQDMProgressBar
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.strategies import FSDPStrategy, DDPStrategy
 from huggingface_hub import hf_hub_download
@@ -36,8 +35,19 @@ import psutil
 import time
 
 from utils.gradient_logging import log_gradient_norms,log_weight_norms
-from lightning.pytorch.callbacks import ThroughputMonitor
-from lightning.fabric.utilities.throughput import measure_flops
+
+# Check PyTorch version for weights_only parameter support
+from packaging import version
+PYTORCH_VERSION = version.parse(torch.__version__.split('+')[0])  # Remove any +cu suffix
+SUPPORTS_WEIGHTS_ONLY = PYTORCH_VERSION.major == 2 and PYTORCH_VERSION.minor >= 6
+
+# PyTorch 2.6+ defaults some loads to weights_only=True. Older Lightning checkpoints can
+# include builtins.getattr in pickled objects, which must be explicitly allowlisted.
+if SUPPORTS_WEIGHTS_ONLY:
+    torch.serialization.add_safe_globals([
+        getattr,
+        losses.KD_Loss_activations,
+    ])
 
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,garbage_collection_threshold:0.8'
 
@@ -62,7 +72,7 @@ def get_total_gpus():
 
 ## setup dataset & dataloader
 # Dataset scheme to use. For now, will use raw .zarr from weatherbench2, but this is to be changed later.
-DATA_PATH_PREFIX = '/capstor/store/cscs/'
+DATA_PATH_PREFIX = os.getenv("ESFM_DATA_PATH_PREFIX", "/capstor/store/cscs/").rstrip("/") + "/"
 start_time_train = datetime(1979, 1, 1, 0, 0, 0)
 end_time_train = datetime(2020, 12, 31, 23, 0, 0)
 start_time_val = datetime(2021, 1, 1, 0, 0, 0)
@@ -297,7 +307,10 @@ def main():
         ckpt_fname = os.path.join(args.log_dir, "last.ckpt")
         if os.path.isfile(ckpt_fname):
             trainer_fit_ckpt_path = ckpt_fname
-            checkpoint = torch.load(trainer_fit_ckpt_path)
+            if SUPPORTS_WEIGHTS_ONLY:
+                checkpoint = torch.load(trainer_fit_ckpt_path, weights_only=False)
+            else:
+                checkpoint = torch.load(trainer_fit_ckpt_path)
             if 'dataloader_state' in checkpoint.keys():
                 dataloader_train.load_state_dict(checkpoint['dataloader_state'])
             else:
@@ -376,7 +389,7 @@ def main():
     )
     
     path_esfm_encoder_pretrained_weights = None # path to local copy of pretrained esfm encoder weights. If None, will load from HuggingFace Hub.
-    if os.path.isfile(path_esfm_encoder_pretrained_weights):
+    if path_esfm_encoder_pretrained_weights is not None and os.path.isfile(path_esfm_encoder_pretrained_weights):
         path = path_esfm_encoder_pretrained_weights
         aurora.load_state_dict(torch.load(path, map_location=next(aurora.parameters()).device), strict=True)  # Load local pretrained weights
         logging.info(f"Pretrained weights are loaded from local path: {path}")
@@ -386,7 +399,7 @@ def main():
         logging.info(f"Pretrained weights are loaded from HuggingFace Hub: {path}")
     
     # Initially load the pretrained aurora by default.
-    if args.load_aurora_pretrain_weights and not args.resume:
+    if args.load_aurora_pretrain_weights is not None and not args.resume:
         if path == path_esfm_encoder_pretrained_weights:
             model.load_state_dict(torch.load(path, map_location=next(model.parameters()).device), strict=False)  # Load local pretrained weights
         else:
@@ -779,7 +792,16 @@ def main():
         surf_var = batch_obj_x.surf_vars.get('2t', next(iter(batch_obj_x.surf_vars.values())))
         return surf_var.shape[0]
 
+     # Configure progress bar for SLURM logs (no ANSI escape codes)
+    if not sys.stdout.isatty():
+        # Non-interactive mode: print progress line-by-line without ANSI codes
+        progress_bar = TQDMProgressBar(refresh_rate=10, process_position=0)
+    else:
+        # Interactive mode: use default progress bar
+        progress_bar = TQDMProgressBar()
+
     callbacks = [
+        progress_bar,
         modelcheckpoint_callback_regular_step_save,
         modelcheckpoint_callback_regular_epoch_save, 
         modelcheckpoint_callback_best_val_save,
@@ -860,7 +882,8 @@ def main():
         logger=logger, 
         min_epochs=10, 
         max_epochs=max_epochs, 
-        profiler="pytorch", 
+        # profiler="pytorch", 
+        profiler=None,
         enable_progress_bar=True, 
         num_sanity_val_steps=2, 
         use_distributed_sampler=False,

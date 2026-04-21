@@ -36,7 +36,12 @@ custom_parser.add_argument('--atmos_vars_save', nargs='+', default=None)
 custom_parser.add_argument('--levels_save', nargs='+', type=int, default=None)
 custom_parser.add_argument('--use_inds_subset', action=argparse.BooleanOptionalAction, default=True)
 custom_parser.add_argument('--test_time_intervals', type=str, default='default')
-custom_parser.add_argument("--use_lora_layers", action=argparse.BooleanOptionalAction, default=False)
+custom_parser.add_argument(
+        "--save_only_masked_predictions_during_testing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="For masked inference runs without region masking, save only the masked variables or pressure levels instead of all predictions. Use --no-save_only_masked_predictions_during_testing to save all variables. [default: True]",
+    )
 custom_args, remaining = custom_parser.parse_known_args()
 
 NUM_ROLLOUT_STEPS = custom_args.NUM_ROLLOUT_STEPS
@@ -45,7 +50,7 @@ atmos_vars_save = custom_args.atmos_vars_save
 levels_save = custom_args.levels_save
 use_inds_subset = custom_args.use_inds_subset
 test_time_intervals = custom_args.test_time_intervals
-use_lora_layers = custom_args.use_lora_layers
+save_only_masked_predictions_during_testing = custom_args.save_only_masked_predictions_during_testing
 # Reconstruct sys.argv without custom arguments for the main parser
 sys.argv = [sys.argv[0]] + remaining
 
@@ -75,7 +80,7 @@ if is_rank0:
     print(f'use_inds_subset: {use_inds_subset}')
     print(f'test_time_intervals: {test_time_intervals}')
 
-DATA_PATH_PREFIX = '/capstor/store/cscs/'
+DATA_PATH_PREFIX = os.getenv("ESFM_DATA_PATH_PREFIX", "/capstor/store/cscs/").rstrip("/") + "/"
 if test_time_intervals == 'default':
     start_end_time_intervals = [
         (datetime(2023, 1, 2, 0, 0, 0), datetime(2023, 1, 8, 23, 0, 0)),
@@ -317,9 +322,7 @@ def main():
 
     # Model setup
     model = ESFM(
-        use_lora=use_lora_layers, 
-        lora_steps=args.max_lora_steps,
-        lora_mode='all', 
+        use_lora=False, 
         autocast=True, # Use AMP (mixed precision to fit to GPU)
         surf_vars=surf_vars,
         static_vars=static_vars,
@@ -330,7 +333,7 @@ def main():
         decoder_num_heads=decoder_num_heads,
         embed_dim=embed_dim,
         num_heads=num_heads,
-        drop_path=0.2,
+        drop_path=0.0,
         num_ensemble = args.num_ensemble,  # Number of ensemble members
         variable_aggregation= args.variable_aggregation,
         use_resolution_specific_patch_tokenizers = args.use_resolution_specific_patch_tokenizers,
@@ -347,7 +350,7 @@ def main():
     # Lightning Module
     class InferenceModule(L.LightningModule):
         def __init__(self, net, var_mask=None, plev_mask=None, mask_region=None, tmp_prediction_save_dir=None, 
-                     surf_vars_save=None, atmos_vars_save=None, levels_save=None):
+                     surf_vars_save=None, atmos_vars_save=None, levels_save=None, strict_loading=True):
             super().__init__()
             self.net = net
             self.var_mask = var_mask
@@ -358,6 +361,7 @@ def main():
             self.atmos_vars_save = atmos_vars_save
             self.levels_save = levels_save
             self.printed_dropped_vars = False
+            self.strict_loading = strict_loading
 
         def forward(self, x):
             return self.net.forward(x)
@@ -611,7 +615,11 @@ def main():
             
             # Post-process: Apply masking if needed and convert to full variable names
             # Determine which variables to save based on masking type
-            save_only_masked = (self.var_mask is not None or self.plev_mask is not None) and self.mask_region is None
+            save_only_masked = (
+                save_only_masked_predictions_during_testing
+                and (self.var_mask is not None or self.plev_mask is not None)
+                and self.mask_region is None
+            )
             
             # Build final predictions dict with full variable names
             final_predictions = {
@@ -738,7 +746,7 @@ def main():
         else:
             raise ValueError(f"Unknown architecture size: {str_architecture_size}. Choose 'small' or 'large' to use pretrained ckpts.")
         path = hf_hub_download(repo_id="microsoft/aurora", filename=hf_pretrain_fname)
-        model.load_checkpoint_local(path, strict=True)
+        model.load_checkpoint_local(path, strict=args.strict_loading)
         ckpt_path = None
         ckpt_step = 0
     else:
@@ -750,7 +758,7 @@ def main():
     copy_threads = []
     if args.vars_mask_during_testing is None and args.plevs_mask_during_testing is None and args.mask_regions_during_testing is None:
         # Setup model and trainer
-        model_lightning = InferenceModule(model, surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save)
+        model_lightning = InferenceModule(model, surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save, strict_loading=args.strict_loading)
         torch_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
         if torch_version >= (2, 6):
             trainer.test(model_lightning, dataloader_val, ckpt_path=ckpt_path, weights_only=False)
@@ -762,7 +770,7 @@ def main():
             logging.info(f"Rank {myrank}: Waiting at barrier before merge...")
             dist.barrier()
         if is_rank0:
-            copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, execute_copy_to_capstor=False)
+            copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
             copy_threads.append(copy_thread)
     else:
         lightning_state_dict = torch.load(ckpt_path, map_location='cpu', weights_only=False)
@@ -771,7 +779,7 @@ def main():
             print(f'Loaded checkpoint at global step: {global_step}')
         state_dict = lightning_state_dict['state_dict']
         state_dict_net_rm = {k[4:]: v for k, v in state_dict.items() if k.startswith('net.')}
-        model.load_state_dict(state_dict_net_rm, strict=True, )
+        model.load_state_dict(state_dict_net_rm, strict=args.strict_loading, )
         del lightning_state_dict
         if args.mask_multiple_during_testing: 
             ## mask everything passed simultaneously and do a single inference run.
@@ -797,52 +805,63 @@ def main():
             else:
                 l_region_str = None
             if is_rank0:
-                print(f'Rank {myrank}: var_mask: {var_mask}, plevs_mask: {plevs_mask}, l_region_str: {l_region_str}. Will be saving temporary files under {tmp_prediction_save_dir}')
+                print(
+                    f'Rank {myrank}: var_mask: {var_mask}, plevs_mask: {plevs_mask}, '
+                    f'l_region_str: {l_region_str}, save_only_masked_predictions: '
+                    f'{save_only_masked_predictions_during_testing}. '
+                    f'Will be saving temporary files under {tmp_prediction_save_dir}'
+                )
             
             model_lightning = InferenceModule(model, var_mask=var_mask, plev_mask=plevs_mask, mask_region=l_region_str, 
                                              tmp_prediction_save_dir=tmp_prediction_save_dir,
-                                             surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save)
+                                             surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save, strict_loading=args.strict_loading)
             trainer.test(model_lightning, dataloader_val)
             logging.info(f"Rank {myrank}: Inference for masked {var_types}, {var_keys} completed.")
             # Synchronize before merge
             if args.devices > 1:
                 dist.barrier()
             if is_rank0:
-                copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                 copy_threads.append(copy_thread)
         elif args.vars_mask_during_testing is not None:
             vars_mask_list = json.loads(args.vars_mask_during_testing) # Expected format: [['2t', 'surf_var'], ['10u', 'surf_var'], ..., ['t', 'atmos_var'],...]
-            print(f'Rank {myrank}: vars_mask_list: {vars_mask_list}')
+            print(
+                f'Rank {myrank}: vars_mask_list: {vars_mask_list}, '
+                f'save_only_masked_predictions: {save_only_masked_predictions_during_testing}'
+            )
             var_keys, var_types = zip(*vars_mask_list)
             zipped_group = zip(var_types, var_keys)
             for var_type, var_key in zipped_group:
                 tmp_prediction_save_dir = f'mask_var_{var_type}_{var_key}'
                 model_lightning = InferenceModule(model, var_mask=(var_type, var_key), tmp_prediction_save_dir=tmp_prediction_save_dir,
-                                                 surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save)
+                                                 surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save, strict_loading=args.strict_loading)
                 trainer.test(model_lightning, dataloader_val)
                 logging.info(f"Rank {myrank}: Inference for masked {var_type}, {var_key} completed.")
                 # Synchronize before merge
                 if args.devices > 1:
                     dist.barrier()
                 if is_rank0: 
-                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                     copy_threads.append(copy_thread)
         elif args.plevs_mask_during_testing is not None:
             if is_rank0:
-                print(f'Rank {myrank}: plevs_mask_during_testing: {args.plevs_mask_during_testing}')
+                print(
+                    f'Rank {myrank}: plevs_mask_during_testing: {args.plevs_mask_during_testing}, '
+                    f'save_only_masked_predictions: {save_only_masked_predictions_during_testing}'
+                )
             # plevs_mask = [int(h) for h in args.plevs_mask_during_testing.split(',')]
             plevs_mask = args.plevs_mask_during_testing
             for plev_mask in plevs_mask:
                 tmp_prediction_save_dir = f'mask_plev_{plev_mask}'
                 model_lightning = InferenceModule(model, plev_mask=[plev_mask], tmp_prediction_save_dir=tmp_prediction_save_dir,
-                                                 surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save)
+                                                 surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save, strict_loading=args.strict_loading)
                 trainer.test(model_lightning, dataloader_val)
                 logging.info(f"Rank {myrank}: Inference for masked plev {plev_mask} completed.")
                 # Synchronize before merge
                 if args.devices > 1:
                     dist.barrier()
                 if is_rank0:
-                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                     copy_threads.append(copy_thread)
         elif args.mask_regions_during_testing is not None:
             l_region_str = args.mask_regions_during_testing
@@ -851,14 +870,14 @@ def main():
             for region_str in l_region_str:
                 tmp_prediction_save_dir = f'mask_region_{region_str}'
                 model_lightning = InferenceModule(model, mask_region=region_str, tmp_prediction_save_dir=tmp_prediction_save_dir,
-                                                 surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save)
+                                                 surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save, strict_loading=args.strict_loading)
                 trainer.test(model_lightning, dataloader_val)
                 logging.info(f"Rank {myrank}: Inference for masked region {region_str} completed.")
                 # Synchronize before merge
                 if args.devices > 1:
                     dist.barrier()
                 if is_rank0:
-                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                     copy_threads.append(copy_thread)
 
     # Wait for all copy operations to complete before exiting (only rank 0 has threads)

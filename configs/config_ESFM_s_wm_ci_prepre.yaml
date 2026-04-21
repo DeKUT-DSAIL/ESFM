@@ -1,0 +1,39 @@
+seed: 42
+num_workers: 2
+epochs: 20
+devices: 4
+resume: true
+wnb_name: ESFM_s_wm_ci_prepre
+wnb_id: ESFM_s_wm_ci_prepre
+learning_rate: 0.0001
+stabilise_level_agg: true
+variable_aggregation: true
+axial_attention: true
+num_ensemble: 1
+nll_weight: 0.0
+crps_weight: 0.0
+kernel_crps_weight: 0.0
+stats_loss_weight: 0.0
+use_resolution_specific_patch_tokenizers: true
+load_aurora_pretrain_weights: false
+log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_wm_ci_prepre
+data_sources: 
+  - cmcc
+  - miroc
+  - taiesm1
+  - nesm
+  - awi
+  - mpi
+  - ec
+  - mri
+mask_config_type: unmaskv3_var5spatial25vertical25
+max_grad_norm: 1.0
+log_norms: true
+log_norm_every_n_steps: 10
+log_val_predictions_as_images: false
+disable_flashattention: false
+add_qk_norm_to_swin3d: false
+str_architecture_size: small
+strategy: ddp
+ddp_find_unused_parameters: true
+kill_on_nan_detection: true

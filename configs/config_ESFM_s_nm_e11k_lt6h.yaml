@@ -1,0 +1,41 @@
+seed: 42
+num_workers: 4
+epochs: 40
+devices: 4
+resume: true
+wnb_name: ESFM_s_wm_e11k_lt6h
+wnb_id: ESFM_s_wm_e11k_lt6h
+learning_rate: 0.0005
+stabilise_level_agg: true
+variable_aggregation: true
+axial_attention: true
+num_ensemble: 1
+nll_weight: 0.0
+crps_weight: 0.0
+kernel_crps_weight: 0.0
+stats_loss_weight: 0.0
+use_resolution_specific_patch_tokenizers: true
+load_aurora_pretrain_weights: false
+log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_wm_e11k_lt6h
+dataset_config_path: /users/fozdemir/projects/wt_aurora/dev/dataset_config.yaml
+data_sources: 
+  - station_npz_11kvar9
+loss_config_name: station11k
+mask_config_type: null
+max_grad_norm: 1.0
+log_norms: false
+log_norm_every_n_steps: 10
+log_val_predictions_as_images: false
+disable_flashattention: false
+add_qk_norm_to_swin3d: true
+str_architecture_size: small
+strategy: ddp
+ddp_find_unused_parameters: true
+load_custom_pretrain_weights_str: "/capstor/store/cscs/swissai/a122/ESFM_related/trained_models/esfm_small_1aa1et_umv3_kdei_sgd_atm_v2/model_ckpt-step=100000-loss_train=0.11.ckpt"
+kill_on_nan_detection: true
+val_data_sources: 
+  - station_npz_11kvar9
+test_data_sources: 
+  - station_npz_11kvar9
+grid_deg_delta: 0.00001
+absolute_time_embedding_in_minutes: true

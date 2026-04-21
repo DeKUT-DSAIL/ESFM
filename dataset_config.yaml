@@ -4,6 +4,7 @@ era5:
     conf:
         name: era5
         path: 'swissai/weatherbench/weatherbench2_original'
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: 6h-forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl]
@@ -19,6 +20,7 @@ era5_toa:
     conf:
         name: era5
         path: 'swissai/weatherbench/weatherbench2_original'
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: 6h-forecast
         atmos_levels: [10, 20, 50, 70, 100, 150, 200, 300, 500, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl]
@@ -50,6 +52,7 @@ era5_22to25:
     conf:
         name: era5
         path: ['swissai/weatherbench/weatherbench2_2022_2023.zarr', 'swissai/weatherbench/weatherbench2_2024_2025.zarr'] 
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: 6h-forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl]
@@ -66,6 +69,7 @@ era5_climate:
     conf:
         name: era5_climate
         path: 'swissai/weatherbench/weatherbench2_original'
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: 6h-forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl, sst, ci, co2]
@@ -74,7 +78,7 @@ era5_climate:
         is_global_observation: true
         resolution: [721, 1440]
         grid_resolution: 0.25
-        co2_path: '/capstor/store/cscs/swissai/a01/hydrological_data/global_annual_CO2.csv'
+        co2_path: '/capstor/store/cscs/swissai/a122/hydrological_data/global_annual_CO2.csv'
 
 era5_climate_22to25:
     class: WeatherBench2Multi
@@ -82,6 +86,7 @@ era5_climate_22to25:
     conf:
         name: era5_climate
         path: ['swissai/weatherbench/weatherbench2_2022_2023.zarr', 'swissai/weatherbench/weatherbench2_2024_2025.zarr'] 
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: 6h-forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl, sst, ci, co2]
@@ -90,7 +95,7 @@ era5_climate_22to25:
         is_global_observation: true
         resolution: [721, 1440]
         grid_resolution: 0.25
-        co2_path: '/capstor/store/cscs/swissai/a01/hydrological_data/global_annual_CO2.csv'
+        co2_path: '/capstor/store/cscs/swissai/a122/hydrological_data/global_annual_CO2.csv'
 
 cmcc:
     class: CMIP6ClimaXDataset
@@ -101,7 +106,7 @@ cmcc:
     batch_size: 24
     conf:
         name: cmcc
-        path: 'swissai/a01/CMIP6_preprocessed/CMCC/CMCC-CM2-HR4/historical/r1i1p1f1/6hrPlevPt' 
+        path: 'swissai/a122/CMIP6_preprocessed/CMCC/CMCC-CM2-HR4/historical/r1i1p1f1/6hrPlevPt' 
         str_task: 6h-forecast
         atmos_levels: [50, 250, 500, 600, 700, 850, 925]
         atmos_vars: [va, ta,  ua, zg]
@@ -297,7 +302,7 @@ miroc:
     batch_size: 32
     conf:
         name: miroc
-        path: 'swissai/a01/CMIP6_preprocessed/MIROC/MIROC6/historical/r1i1p1f1/6hrPlevPt/'
+        path: 'swissai/a122/CMIP6_preprocessed/MIROC/MIROC6/historical/r1i1p1f1/6hrPlevPt/'
         str_task: 6h-forecast
         atmos_levels: [50, 250, 500, 600, 700, 850, 925]
         atmos_vars: ['zg', 'ta', 'hus', 'ua', 'va']
@@ -327,7 +332,7 @@ taiesm1:
     batch_size: 24
     conf:
         name: taiesm1
-        path: 'swissai/a01/CMIP6_preprocessed/AS-RCEC/TaiESM1/historical/r1i1p1f1/6hrPlevPt'
+        path: 'swissai/a122/CMIP6_preprocessed/AS-RCEC/TaiESM1/historical/r1i1p1f1/6hrPlevPt'
         str_task: 6h-forecast
         atmos_levels: [250, 500, 850]
         atmos_vars: ['ta', 'ua', 'va']
@@ -359,7 +364,7 @@ nesm:
     batch_size: 24
     conf:
         name: nesm
-        path: 'swissai/a01/CMIP6_preprocessed/NUIST/NESM3/historical/r1i1p1f1/6hrPlevPt'
+        path: 'swissai/a122/CMIP6_preprocessed/NUIST/NESM3/historical/r1i1p1f1/6hrPlevPt'
         str_task: 6h-forecast
         atmos_levels: [250, 500, 850]
         atmos_vars: ['ta', 'ua', 'va']
@@ -384,7 +389,7 @@ awi:
     batch_size: 16
     conf:
         name: awi
-        path: 'swissai/a01/CMIP6_preprocessed/AWI/AWI-ESM-1-1-LR/historical/r1i1p1f1/6hrPlevPt'
+        path: 'swissai/a122/CMIP6_preprocessed/AWI/AWI-ESM-1-1-LR/historical/r1i1p1f1/6hrPlevPt'
         str_task: 6h-forecast
         atmos_levels: [50, 250, 500, 600, 700, 850, 925]
         atmos_vars: ['zg', 'ta', 'hus', 'ua', 'va']
@@ -415,7 +420,7 @@ mpi:
     batch_size: 14
     conf:
         name: mpi
-        path: 'swissai/a01/CMIP6_preprocessed/MPI-M/MPI-ESM1-2-HR/historical/r1i1p1f1/6hrPlevPt'
+        path: 'swissai/a122/CMIP6_preprocessed/MPI-M/MPI-ESM1-2-HR/historical/r1i1p1f1/6hrPlevPt'
         str_task: 6h-forecast
         atmos_levels: [50, 250, 500, 600, 700, 850, 925]
         atmos_vars: ['zg', 'ta', 'ua', 'va']
@@ -445,7 +450,7 @@ ec:
     batch_size: 7
     conf:
         name: ec
-        path: 'swissai/a01/CMIP6_preprocessed/EC-Earth-Consortium/EC-Earth3/historical/r1i1p1f1/6hrPlevPt'
+        path: 'swissai/a122/CMIP6_preprocessed/EC-Earth-Consortium/EC-Earth3/historical/r1i1p1f1/6hrPlevPt'
         str_task: 6h-forecast
         atmos_levels: [250, 500, 850]
         atmos_vars: ['zg', 'ta', 'ua', 'va']
@@ -472,7 +477,7 @@ mri:
     batch_size: 24
     conf:
         name: mri
-        path: 'swissai/a01/CMIP6_preprocessed/MRI/MRI-ESM2-0/historical/r1i1p1f1/6hrPlevPt'
+        path: 'swissai/a122/CMIP6_preprocessed/MRI/MRI-ESM2-0/historical/r1i1p1f1/6hrPlevPt'
         str_task: 6h-forecast
         atmos_levels: [50, 250, 500, 600, 700, 850, 925]
         atmos_vars: ['zg', 'ta', 'hus', 'ua', 'va']
@@ -583,6 +588,42 @@ station_npz_11kvar9:
     variable_name_mapping: {}  
     grid_resolution: 0.00001   
 
+station_npz_11kvar9_lt12h:
+  class: StationGridNPZ
+  batch_size: 14
+  train_time_start: "2000-01-01T00:00:00.000000"
+  train_time_end: "2020-12-31T23:59:59.999999"
+  val_time_start: '2021-01-01T00:00:00.000000'
+  val_time_end: '2021-12-30T23:59:59.999999'
+  conf:
+    name: station_ecmwf11k
+    path: swissai/a122/ESFM_ExtraDataset/stations_11k_var9/stations_11k_training_data.npy
+    surf_vars: [pa, msl, 2t, dt, 10u, 10v, wd, ws, ts]         
+    atmos_vars:  ['<N/A>']
+    static_vars: []                    
+    lead_time_h: 12
+    str_task: 12h-forecast
+    variable_name_mapping: {}  
+    grid_resolution: 0.00001  
+
+station_npz_11kvar9_lt24h:
+  class: StationGridNPZ
+  batch_size: 14
+  train_time_start: "2000-01-01T00:00:00.000000"
+  train_time_end: "2020-12-31T23:59:59.999999"
+  val_time_start: '2021-01-01T00:00:00.000000'
+  val_time_end: '2021-12-30T23:59:59.999999'
+  conf:
+    name: station_ecmwf11k
+    path: swissai/a122/ESFM_ExtraDataset/stations_11k_var9/stations_11k_training_data.npy
+    surf_vars: [pa, msl, 2t, dt, 10u, 10v, wd, ws, ts]         
+    atmos_vars:  ['<N/A>']
+    static_vars: []                    
+    lead_time_h: 24
+    str_task: 24h-forecast
+    variable_name_mapping: {}  
+    grid_resolution: 0.00001  
+
 station_npz_11kvar9_holdout:
   class: StationGridNPZ
   batch_size: 14
@@ -601,6 +642,42 @@ station_npz_11kvar9_holdout:
     variable_name_mapping: {}  
     grid_resolution: 0.00001   
 
+station_npz_11kvar9_holdout_lt12h:
+  class: StationGridNPZ
+  batch_size: 14
+  train_time_start: "2000-01-01T00:00:00.000000"
+  train_time_end: "2020-12-31T23:59:59.999999"
+  val_time_start: "2023-01-01T00:00:00.000000"
+  val_time_end: "2023-12-31T23:59:59.999999"
+  conf:
+    name: station_ecmwf11k
+    path: swissai/a122/ESFM_ExtraDataset/stations_11k_var9/stations_11k_holdout_data.npy
+    surf_vars: [pa, msl, 2t, dt, 10u, 10v, wd, ws, ts]          
+    atmos_vars:  ['<N/A>']
+    static_vars: []                    
+    lead_time_h: 12
+    str_task: 12h-forecast
+    variable_name_mapping: {}  
+    grid_resolution: 0.00001   
+
+station_npz_11kvar9_holdout_lt24h:
+  class: StationGridNPZ
+  batch_size: 14
+  train_time_start: "2000-01-01T00:00:00.000000"
+  train_time_end: "2020-12-31T23:59:59.999999"
+  val_time_start: "2023-01-01T00:00:00.000000"
+  val_time_end: "2023-12-31T23:59:59.999999"
+  conf:
+    name: station_ecmwf11k
+    path: swissai/a122/ESFM_ExtraDataset/stations_11k_var9/stations_11k_holdout_data.npy
+    surf_vars: [pa, msl, 2t, dt, 10u, 10v, wd, ws, ts]          
+    atmos_vars:  ['<N/A>']
+    static_vars: []                    
+    lead_time_h: 24
+    str_task: 24h-forecast
+    variable_name_mapping: {}  
+    grid_resolution: 0.00001   
+
 era5_precipERA5:
     class: WeatherBench2Raw
     path_slt: 
@@ -614,6 +691,7 @@ era5_precipERA5:
     step_time_val: 3
     conf:
         path: 'swissai/weatherbench/weatherbench2_original'
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: 6h-forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl, tp, sst, ci, co2]
@@ -636,6 +714,7 @@ era5_precipERA5_log:
     step_time_val: 3
     conf:
         path: 'swissai/weatherbench/weatherbench2_original'
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: 6h-forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl, tp_log, sst, ci, co2]
@@ -659,6 +738,7 @@ era5_newvars:
     conf:
         name: era5_plus_accumulated_surf_vars
         path: 'swissai/weatherbench/weatherbench2_original'
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl, sst, ci, co2, tp_6hr, pe_6hr, ssr_6hr, ssrd_6hr, ttr_6hr, tsr_6hr]
@@ -685,6 +765,7 @@ era5_newvars_22to25:
     conf:
         name: era5_plus_accumulated_surf_vars
         path: ['swissai/weatherbench/weatherbench2_2022_2023.zarr', 'swissai/weatherbench/weatherbench2_2024_2025.zarr'] 
+        stats_path: 'esfm/normalization_stats_1979_2021.json'
         str_task: forecast
         atmos_levels: [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
         surf_vars: [2t, 10u, 10v, msl, sst, ci, co2, tp_6hr, pe_6hr, ssr_6hr, ssrd_6hr, ttr_6hr, tsr_6hr]
@@ -763,13 +844,6 @@ modis_val_2024_tq:
             'MYD05_L2_avg_NIR' : 'nir_myd',
         }
         extended_vars: ['lsm', 'z', 'slt', 't', 'q']
-        # extended_path: {
-        #     'lsm': '/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr',
-        #     'z': '/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr',
-        #     'slt': '/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr',
-        #     't': '/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr',
-        #     'q': '/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr',
-        # }
         extended_path: {
             'lsm': '/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr',
             'z': '/capstor/store/cscs/swissai/weatherbench/weatherbench2_2024_2025.zarr',

@@ -325,14 +325,6 @@ def get_parser():
         default='',
         help="does nothing, for notebook compatibility",
     )
-    parser.add_argument(
-        "--max_lora_steps",
-        type=int,
-        default=12,
-        help=(
-            "Number of LoRA layers to create in the model architecture (one per rollout step index). [default: 128]"
-        ),
-    )
     return parser
     
 def parse_known_args():

@@ -1,0 +1,21 @@
+seed: 42
+num_workers: 4
+epochs: 5
+devices: 4
+resume: true
+wnb_name: ESFM_s_enc_KD_nm
+wnb_id: ESFM_s_enc_KD_nm
+learning_rate: 0.0005
+stabilise_level_agg: true
+variable_aggregation: true
+axial_attention: true
+use_resolution_specific_patch_tokenizers: false
+load_aurora_pretrain_weights: true
+log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_enc_KD_nm
+data_sources: 
+  - era5
+max_grad_norm: 1.0
+log_norms: true
+log_norm_every_n_steps: 10
+disable_flashattention: false
+str_architecture_size: small

@@ -43,6 +43,15 @@ from packaging import version
 PYTORCH_VERSION = version.parse(torch.__version__.split('+')[0])  # Remove any +cu suffix
 SUPPORTS_WEIGHTS_ONLY = PYTORCH_VERSION.major == 2 and PYTORCH_VERSION.minor >= 6
 
+# PyTorch 2.6+ defaults some loads to weights_only=True. Older Lightning checkpoints can
+# include builtins.getattr in pickled objects, which must be explicitly allowlisted.
+if SUPPORTS_WEIGHTS_ONLY:
+    torch.serialization.add_safe_globals([
+        getattr,
+        losses.CombinedLoss,
+        losses.WeightedMAELoss,
+    ])
+
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True,garbage_collection_threshold:0.8'
 
 is_rank0 = False
@@ -66,15 +75,11 @@ def get_total_gpus():
     total_gpus = int(os.getenv("WORLD_SIZE", "1"))  # Default to 1 node if not set
     return total_gpus
 
-DATA_PATH_PREFIX = '/capstor/store/cscs/'
+DATA_PATH_PREFIX = os.getenv("ESFM_DATA_PATH_PREFIX", "/capstor/store/cscs/").rstrip("/") + "/"
 start_time_train = datetime(1979, 1, 1, 0, 0, 0)
 end_time_train = datetime(2020, 12, 31, 23, 0, 0)
 start_time_val = datetime(2021, 1, 1, 0, 0, 0)
 end_time_val = datetime(2021, 12, 31, 23, 0, 0) ## last date on wb2 is 2021-12-31
-path_weatherbench2 = '/capstor/store/cscs/ERA5/weatherbench2_original'
-path_cmip6 = '/store/swissai/a122/CMIP6_preprocessed/CMCC/CMCC-CM2-HR4/historical/r1i1p1f1/6hrPlevPt'
-path_slt = '/capstor/store/cscs/swissai/a122/ERA5_missing_feats/static/ERA5_Soiltype.npy'
-slt = np.load(path_slt)
 inds_train = [np.datetime64(start_time_train + timedelta(hours=i)) for i in range(int((end_time_train - start_time_train).total_seconds() // 3600) + 1)]
 inds_val = [np.datetime64(start_time_val + timedelta(hours=i)) for i in range(int((end_time_val - start_time_val).total_seconds() // 3600) + 1)]
 
@@ -957,7 +962,7 @@ def main():
                 activation_ckpt_policy = None
             fsdp_strategy = FSDPStrategy(
                 activation_checkpointing_policy=activation_ckpt_policy,
-                cpu_offload=True,
+                cpu_offload=False,
                 sharding_strategy="FULL_SHARD", 
                 backward_prefetch=None,
                 use_orig_params=True,

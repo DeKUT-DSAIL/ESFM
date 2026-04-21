@@ -273,7 +273,7 @@ class WeatherBench2Raw(Dataset):
         self.dict_stats = dict_stats
         self.is_global_observation = is_global_observation
         self.grid_resolution = grid_resolution
-        self.ds = xr.open_zarr(path)
+        self.ds = xr.open_zarr(path, chunks=None)
         self.dict_ds_extended = dict()
         self.lead_time_h = lead_time_h
         self.with_cache = with_cache
@@ -2487,23 +2487,23 @@ class MODISDataset(WeatherBench2Raw):
                 ## static or other vars from ERA5
                 if var in d_static_abr2full.keys():
                     if isinstance(extended_path[var], list):
-                        self.dict_ds_extended[d_static_abr2full[var]] = xr.open_zarr(extended_path[var][0])[d_static_abr2full[var]].sel(latitude=self.lat, longitude=self.lon) # static vars are static, just take the first one
+                        self.dict_ds_extended[d_static_abr2full[var]] = xr.open_zarr(extended_path[var][0], chunks=None)[d_static_abr2full[var]].sel(latitude=self.lat, longitude=self.lon) # static vars are static, just take the first one
                     else:
-                        self.dict_ds_extended[d_static_abr2full[var]] = xr.open_zarr(extended_path[var])[d_static_abr2full[var]].sel(latitude=self.lat, longitude=self.lon)
+                        self.dict_ds_extended[d_static_abr2full[var]] = xr.open_zarr(extended_path[var], chunks=None)[d_static_abr2full[var]].sel(latitude=self.lat, longitude=self.lon)
                 elif var in d_srf_abr2full.keys():
                     if isinstance(extended_path[var], list):
                         ds_list_ = [xr.open_zarr(p, chunks=None)[d_srf_abr2full[var].replace('_log', '')].sel(latitude=self.lat, longitude=self.lon) for p in extended_path[var]]
                         merged = _merge_time_ordered(ds_list_)
                         self.dict_ds_extended[d_srf_abr2full[var]] = _subset_time_window(merged, self.inds, max(int(self.lead_time_h), int(self.lead_time_x_hist)))
                     else:
-                        self.dict_ds_extended[d_srf_abr2full[var]] = xr.open_zarr(extended_path[var])[d_srf_abr2full[var].replace('_log', '')].sel(latitude=self.lat, longitude=self.lon)
+                        self.dict_ds_extended[d_srf_abr2full[var]] = xr.open_zarr(extended_path[var], chunks=None)[d_srf_abr2full[var].replace('_log', '')].sel(latitude=self.lat, longitude=self.lon)
                 elif var in d_atmos_abr2full.keys():
                     if isinstance(extended_path[var], list):
                         ds_list_ = [xr.open_zarr(p, chunks=None)[d_atmos_abr2full[var]].sel(level=self.atmos_levels, latitude=self.lat, longitude=self.lon) for p in extended_path[var]]
                         merged = _merge_time_ordered(ds_list_)
                         self.dict_ds_extended[d_atmos_abr2full[var]] = _subset_time_window(merged, self.inds, max(int(self.lead_time_h), int(self.lead_time_x_hist)))
                     else:
-                        self.dict_ds_extended[d_atmos_abr2full[var]] = xr.open_zarr(extended_path[var])[d_atmos_abr2full[var]].sel(level=self.atmos_levels, latitude=self.lat, longitude=self.lon)
+                        self.dict_ds_extended[d_atmos_abr2full[var]] = xr.open_zarr(extended_path[var], chunks=None)[d_atmos_abr2full[var]].sel(level=self.atmos_levels, latitude=self.lat, longitude=self.lon)
                 else:
                     raise ValueError(f'Variable {var} from extended_vars not recognized in any category (surf, static, atmos).')
         

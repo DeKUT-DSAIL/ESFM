@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import pickle
 import sys
+import argparse
 from natsort import natsorted
 import glob
 import yaml
@@ -23,6 +24,27 @@ from torch.utils.data.distributed import DistributedSampler
 import torch.distributed as dist
 
 from esfm import ESFM, Batch, Metadata
+
+# Parse custom arguments first and remove them from sys.argv before the main parser.
+custom_parser = argparse.ArgumentParser(add_help=False)
+custom_parser.add_argument(
+    "--save_only_masked_predictions_during_testing",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="For masked inference runs without region masking, save only the masked variables or pressure levels instead of all predictions. Use --no-save_only_masked_predictions_during_testing to save all variables. [default: True]",
+)
+custom_parser.add_argument(
+    "--use_val_set_from_config",
+    action=argparse.BooleanOptionalAction,
+    default=False,
+    help="Use the validation set timestamps defined in the dataset config (val_time_start/val_time_end for ERA5-type datasets, start_val/end_val for others) instead of the fixed 2023/2024 test set. [default: False]",
+)
+custom_args, remaining = custom_parser.parse_known_args()
+save_only_masked_predictions_during_testing = custom_args.save_only_masked_predictions_during_testing
+use_val_set_from_config = custom_args.use_val_set_from_config
+
+# Reconstruct sys.argv without custom arguments for the main parser.
+sys.argv = [sys.argv[0]] + remaining
 
 # Import custom modules
 from config import parse_args
@@ -39,7 +61,7 @@ if args.load_aurora_pretrain_weights and args.load_custom_pretrain_weights_str i
 # Setup environment and paths
 is_rank0 = int(os.getenv("LOCAL_RANK", "0")) == 0
 
-DATA_PATH_PREFIX = '/capstor/store/cscs/'
+DATA_PATH_PREFIX = os.getenv("ESFM_DATA_PATH_PREFIX", "/capstor/store/cscs/").rstrip("/") + "/"
 start_end_time_intervals = [
     (datetime(2023, 1, 2, 0, 0, 0), datetime(2023, 1, 8, 23, 0, 0)),
     (datetime(2023, 4, 2, 0, 0, 0), datetime(2023, 4, 8, 23, 0, 0)),
@@ -52,21 +74,33 @@ start_end_time_intervals = [
     (datetime(2024, 10, 2, 0, 0, 0), datetime(2024, 10, 8, 23, 0, 0)),
 ]
 use_inds_subset = False
-tmp_pred_fname = "tmp_predictions_subset" if use_inds_subset else "tmp_predictions"
-inds = []
-for (start_time, end_time) in start_end_time_intervals:
-    inds_ = [np.datetime64(start_time + timedelta(hours=i)) for i in range(int((end_time - start_time).total_seconds() // 3600) + 1)]
-    if use_inds_subset:
-        inds_ = validation_utils.get_every_nth_index(inds_, n=6, shift_n_every_m=3)
-    inds.extend(inds_)
-    
-print(f'#timesteps for inference dataset: {len(inds)}')
+if use_val_set_from_config:
+    tmp_pred_fname = "tmp_predictions_val_set_subset" if use_inds_subset else "tmp_predictions_val_set"
+    inds = []  # populated per-dataset inside load_data from val_time_start/val_time_end
+    print(f'#timesteps for inference dataset will be acquired from the val set in the dataset config.')
+else:
+    tmp_pred_fname = "tmp_predictions_subset" if use_inds_subset else "tmp_predictions"
+    inds = []
+    for (start_time, end_time) in start_end_time_intervals:
+        inds_ = [np.datetime64(start_time + timedelta(hours=i)) for i in range(int((end_time - start_time).total_seconds() // 3600) + 1)]
+        if use_inds_subset:
+            inds_ = validation_utils.get_every_nth_index(inds_, n=6, shift_n_every_m=3)
+        inds.extend(inds_)
+    print(f'#timesteps for inference dataset: {len(inds)}')
 
 def get_device(use_gpu):
     return "cuda" if use_gpu and torch.cuda.is_available() else "cpu"
 
 
 _TIME_FMT = "%Y-%m-%dT%H:%M:%S.%f"           # keeps the format in one place
+
+def _parse_time(s):
+    """Parse an ISO-8601 datetime string with or without microseconds."""
+    try:
+        return datetime.strptime(s, _TIME_FMT)
+    except ValueError:
+        return datetime.strptime(s, "%Y-%m-%dT%H:%M:%S")
+
 def _make_batch(batch_dict, *, normalize_target: bool = True):
     """
     Convert the default-collated dictionary into (batch_x, batch_y)
@@ -161,7 +195,18 @@ def load_data(yaml_path, datasets_type):
                 conf_infer['path'] = os.path.join(DATA_PATH_PREFIX, conf_infer['path'])
             
             if dataset_type.startswith('era5') or dataset_type.startswith('station') or dataset_type.startswith('modis') or dataset_type.startswith('cosmo'):
-                conf_infer['inds'] = inds
+                if use_val_set_from_config:
+                    ind_val_start = yml_file[dataset_type]['val_time_start']
+                    ind_val_end = yml_file[dataset_type]['val_time_end']
+                    start_time_val = _parse_time(ind_val_start)
+                    end_time_val = _parse_time(ind_val_end)
+                    inds_val_ = [np.datetime64(start_time_val + timedelta(hours=i)) for i in range(int((end_time_val - start_time_val).total_seconds() // 3600) + 1)]
+                    if use_inds_subset:
+                        inds_val_ = validation_utils.get_every_nth_index(inds_val_, n=6, shift_n_every_m=3)
+                    conf_infer['inds'] = inds_val_
+                    logging.info(f"[{dataset_type}] Using val set from config: {ind_val_start} -> {ind_val_end} ({len(inds_val_)} timesteps)")
+                else:
+                    conf_infer['inds'] = inds
             else:
                 conf_infer['start_idx'] = yml_file[dataset_type]['start_val']
                 conf_infer['end_idx'] = yml_file[dataset_type]['end_val']
@@ -287,7 +332,7 @@ def main():
         decoder_num_heads=decoder_num_heads,
         embed_dim=embed_dim,
         num_heads=num_heads,
-        drop_path=0.2,
+        drop_path=0.0,
         num_ensemble = args.num_ensemble,  # Number of ensemble members
         variable_aggregation= args.variable_aggregation,
         use_resolution_specific_patch_tokenizers = args.use_resolution_specific_patch_tokenizers,
@@ -464,7 +509,11 @@ def main():
             
             # Store predictions only for the masked variable or plevs if applicable
             # Determine which variables to save based on masking type
-            save_only_masked = (self.var_mask is not None or self.plev_mask is not None) and self.mask_region is None
+            save_only_masked = (
+                save_only_masked_predictions_during_testing
+                and (self.var_mask is not None or self.plev_mask is not None)
+                and self.mask_region is None
+            )
             
             if save_only_masked and self.var_mask is not None:
                 # Only save the masked variables
@@ -583,7 +632,7 @@ def main():
             logging.info(f"Rank {myrank}: Waiting at barrier before merge...")
             dist.barrier()
         if is_rank0:
-            copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, execute_copy_to_capstor=False)
+            copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
             copy_threads.append(copy_thread)
     else:
         # Check PyTorch version for weights_only parameter support (available in PyTorch 2.6+)
@@ -623,7 +672,12 @@ def main():
             else:
                 l_region_str = None
             if is_rank0:
-                print(f'Rank {myrank}: var_mask: {var_mask}, plevs_mask: {plevs_mask}, l_region_str: {l_region_str}. Will be saving temporary files under {tmp_prediction_save_dir}')
+                print(
+                    f'Rank {myrank}: var_mask: {var_mask}, plevs_mask: {plevs_mask}, '
+                    f'l_region_str: {l_region_str}, save_only_masked_predictions: '
+                    f'{save_only_masked_predictions_during_testing}. '
+                    f'Will be saving temporary files under {tmp_prediction_save_dir}'
+                )
             
             model_lightning = InferenceModule(model, var_mask=var_mask, plev_mask=plevs_mask, mask_region=l_region_str, tmp_prediction_save_dir=tmp_prediction_save_dir)
             trainer.test(model_lightning, dataloader_val)
@@ -632,11 +686,14 @@ def main():
             if args.devices > 1:
                 dist.barrier()
             if is_rank0:
-                copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                 copy_threads.append(copy_thread)
         elif args.vars_mask_during_testing is not None:
             vars_mask_list = json.loads(args.vars_mask_during_testing) # Expected format: [['2t', 'surf_var'], ['10u', 'surf_var'], ..., ['t', 'atmos_var'],...]
-            print(f'Rank {myrank}: vars_mask_list: {vars_mask_list}')
+            print(
+                f'Rank {myrank}: vars_mask_list: {vars_mask_list}, '
+                f'save_only_masked_predictions: {save_only_masked_predictions_during_testing}'
+            )
             var_keys, var_types = zip(*vars_mask_list)
             zipped_group = zip(var_types, var_keys)
             for var_type, var_key in zipped_group:
@@ -648,11 +705,14 @@ def main():
                 if args.devices > 1:
                     dist.barrier()
                 if is_rank0: 
-                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                     copy_threads.append(copy_thread)
         elif args.plevs_mask_during_testing is not None:
             if is_rank0:
-                print(f'Rank {myrank}: plevs_mask_during_testing: {args.plevs_mask_during_testing}')
+                print(
+                    f'Rank {myrank}: plevs_mask_during_testing: {args.plevs_mask_during_testing}, '
+                    f'save_only_masked_predictions: {save_only_masked_predictions_during_testing}'
+                )
             # plevs_mask = [int(h) for h in args.plevs_mask_during_testing.split(',')]
             plevs_mask = args.plevs_mask_during_testing
             for plev_mask in plevs_mask:
@@ -664,7 +724,7 @@ def main():
                 if args.devices > 1:
                     dist.barrier()
                 if is_rank0:
-                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                     copy_threads.append(copy_thread)
         elif args.mask_regions_during_testing is not None:
             l_region_str = args.mask_regions_during_testing
@@ -679,7 +739,7 @@ def main():
                 if args.devices > 1:
                     dist.barrier()
                 if is_rank0:
-                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False)
+                    copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, tmp_prediction_save_dir=tmp_prediction_save_dir, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
                     copy_threads.append(copy_thread)
     
     # Wait for all copy operations to complete before exiting (only rank 0 has threads)

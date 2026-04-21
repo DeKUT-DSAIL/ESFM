@@ -140,7 +140,7 @@ def get_region_index_intervals(lat, lon, region_str="switzerland", tolerance=0.0
 
     return (lat_start, lat_end), (lon_start, lon_end)
 
-def merge_prediction_files_and_copy_to_capstor(log_dir, ckpt_step, config, tmp_prediction_save_dir=None, execute_copy_to_capstor=False):
+def merge_prediction_files_and_copy_to_capstor(log_dir, ckpt_step, config, tmp_prediction_save_dir=None, execute_copy_to_capstor=False, tmp_pred_fname=''):
     # Store exception info if copy fails
     thread_exception = {'error': None}
     
@@ -151,7 +151,10 @@ def merge_prediction_files_and_copy_to_capstor(log_dir, ckpt_step, config, tmp_p
                 # save_path: os.path.join(log_dir, tmp_prediction_save_dir, f'predictions_step{ckpt_step}.zarr')
                 logging.info("Merging of prediction files completed. Now copying them to capstor.")
                 
-                p_copy_results_parent = "/capstor/store/cscs/swissai/a122/ESFM_Results"
+                p_copy_results_parent = os.getenv(
+                    "ESFM_RESULTS_COPY_BASE",
+                    "/capstor/store/cscs/swissai/a122/ESFM_Results",
+                ).rstrip("/")
                 exp_name = os.path.basename(log_dir) # esfm_small_aa_unmask_rplv
                 if tmp_prediction_save_dir is not None:
                     sd_dn = os.path.basename(os.path.dirname(save_path)) # tmp_prediction_save_dir or esfm_small_aa_unmask_rplv
