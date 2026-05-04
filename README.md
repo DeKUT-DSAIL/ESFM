@@ -8,22 +8,29 @@ The codebase is based on the Aurora model stack and extends it with ESFM-specifi
 
 ## Contents
 
-- [Project Scope](#project-scope)
-- [Repository Layout](#repository-layout)
-- [Requirements](#requirements)
-- [Model Weights](#model-weights)
-- [Configuration System](#configuration-system)
-- [Training](#training)
-- [Inference](#inference)
-- [Data Preprocessing](#data-preprocessing)
-- [Station Metrics Evaluation](#station-metrics-evaluation)
-- [Experiment Scripts](#experiment-scripts)
-- [Path Update Helpers](#path-update-helpers)
-- [Troubleshooting Notes](#troubleshooting-notes)
-- [Citation](#citation)
-- [License](#license)
-- [Acknowledgements](#acknowledgements)
-- [Contributing](#contributing)
+- [ESFM: Earth System Foundation Model](#esfm-earth-system-foundation-model)
+  - [Contents](#contents)
+  - [Project Scope](#project-scope)
+  - [Repository Layout](#repository-layout)
+  - [Requirements](#requirements)
+  - [Model Weights](#model-weights)
+  - [Preprint](#preprint)
+  - [Configuration System](#configuration-system)
+  - [Training](#training)
+  - [Inference](#inference)
+    - [Single-step inference](#single-step-inference)
+    - [Multi-step rollout inference](#multi-step-rollout-inference)
+  - [Data Preprocessing](#data-preprocessing)
+  - [Station Metrics Evaluation](#station-metrics-evaluation)
+  - [Experiment Scripts](#experiment-scripts)
+  - [Path Update Helpers](#path-update-helpers)
+    - [Update workdir defaults in Slurm scripts](#update-workdir-defaults-in-slurm-scripts)
+    - [Update log\_dir base in config files](#update-log_dir-base-in-config-files)
+  - [Troubleshooting Notes](#troubleshooting-notes)
+  - [Citation](#citation)
+  - [License](#license)
+  - [Acknowledgements](#acknowledgements)
+  - [Contributing](#contributing)
 
 ## Project Scope
 
@@ -63,6 +70,10 @@ Most of our experiments have ran on an image based off of modulus:24.04, but lat
 ## Model Weights
 
 Model weights for the different experiments from the manuscript are available on [Hugging Face (ESFM)](https://huggingface.co/ESFM).
+
+## Preprint
+
+The ESFM preprint is available in this repository on the `preprint` branch: [preprint-ESFM.pdf](https://github.com/swiss-ai/ESFM/blob/preprint/assets/preprint-ESFM.pdf).
 
 ## Configuration System
 
