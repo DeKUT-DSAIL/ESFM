@@ -73,7 +73,7 @@ Model weights for the different experiments from the manuscript are available on
 
 ## Preprint
 
-The ESFM preprint is available in this repository on the `preprint` branch: [preprint-ESFM.pdf](https://github.com/swiss-ai/ESFM/blob/preprint/assets/preprint-ESFM.pdf).
+The ESFM preprint is available [[here](https://arxiv.org/abs/2605.00850)].
 
 ## Configuration System
 
@@ -249,10 +249,18 @@ git diff -- scripts/training scripts/inference configs
 
 ## Citation
 
-If you use this codebase in your work, please cite ESFM:
-
-**TBD**
-
+You can cite ESFM as follows:
+```
+@misc{ozdemir2026esfm,
+      title={Earth System Foundation Model (ESFM): A unified framework for heterogeneous data integration and forecasting}, 
+      author={Firat Ozdemir and Yun Cheng and Salman Mohebi and Fanny Lehmann and Simon Adamov and Zhenyi Zhang and Leonardo Trentini and Dana Grund and Oliver Fuhrer and Torsten Hoefler and Siddhartha Mishra and Sebastian Schemm and Benedikt Soja and Mathieu Salzmann},
+      year={2026},
+      eprint={2605.00850},
+      archivePrefix={arXiv},
+      primaryClass={physics.ao-ph},
+      url={https://arxiv.org/abs/2605.00850}, 
+}
+```
 
 
 ## License
