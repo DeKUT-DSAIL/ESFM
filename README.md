@@ -6,6 +6,10 @@ The codebase is based on the Aurora model stack and extends it with ESFM-specifi
 
 ![ESFM Teaser Schematic](assets/ESFM-schematic-teaser.png)
 
+<video autoplay loop muted playsinline width="100%">
+  <source src="https://github.com/user-attachments/assets/c6faedb4-b1f9-4160-8e52-a12f8dc5f9f0" type="video/mp4">
+</video>
+
 ## Contents
 
 - [ESFM: Earth System Foundation Model](#esfm-earth-system-foundation-model)
