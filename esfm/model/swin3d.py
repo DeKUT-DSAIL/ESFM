@@ -355,7 +355,7 @@ def get_3d_merge_groups() -> list[tuple[int, int]]:
     return merge_groups_3d
 
 
-@lru_cache
+@lru_cache(maxsize=64)
 def compute_3d_shifted_window_mask(
     C: int,
     H: int,
@@ -534,7 +534,9 @@ class Swin3DTransformerBlock(nn.Module):
         if not all(s == 0 for s in ss):
             shifted_x = torch.roll(x, shifts=(-ss[0], -ss[1], -ss[2]), dims=(1, 2, 3))
             attn_mask, _ = compute_3d_shifted_window_mask(
-                C, H, W, ws, ss, x.device, x.dtype, warped=warped
+                int(C), int(H), int(W),
+                tuple(int(v) for v in ws), tuple(int(v) for v in ss),
+                x.device, x.dtype, warped=warped,
             )
         else:
             shifted_x = x
