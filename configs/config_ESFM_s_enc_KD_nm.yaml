@@ -11,7 +11,7 @@ variable_aggregation: true
 axial_attention: true
 use_resolution_specific_patch_tokenizers: false
 load_aurora_pretrain_weights: true
-log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_enc_KD_nm
+log_dir: /ritom/scratch/cscs/tligawa/ai-4-weather/experiments/ESFMs/ESFM_outputs/ESFM_s_enc_KD_nm
 data_sources: 
   - era5
 max_grad_norm: 1.0

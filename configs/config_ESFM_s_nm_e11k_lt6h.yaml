@@ -16,8 +16,8 @@ kernel_crps_weight: 0.0
 stats_loss_weight: 0.0
 use_resolution_specific_patch_tokenizers: true
 load_aurora_pretrain_weights: false
-log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_wm_e11k_lt6h
-dataset_config_path: /users/fozdemir/projects/wt_aurora/dev/dataset_config.yaml
+log_dir: /ritom/scratch/cscs/tligawa/ai-4-weather/experiments/ESFMs/ESFM_outputs/ESFM_s_wm_e11k_lt6h
+dataset_config_path: /users/tligawa/ESFM/dataset_config.yaml
 data_sources: 
   - station_npz_11kvar9
 loss_config_name: station11k
