@@ -16,7 +16,7 @@ kernel_crps_weight: 0.0
 stats_loss_weight: 0.0
 use_resolution_specific_patch_tokenizers: false
 load_aurora_pretrain_weights: false
-log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_wm_ci_pre
+log_dir: /ritom/scratch/cscs/tligawa/ai-4-weather/experiments/ESFMs/ESFM_outputs/ESFM_s_wm_ci_pre
 data_sources: 
   - era5
 mask_config_type: unmaskv3_var5spatial25vertical25

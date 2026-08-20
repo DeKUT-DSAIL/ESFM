@@ -19,7 +19,7 @@ stats_loss_weight: 0.0
 lpips_weight: 0.0
 use_resolution_specific_patch_tokenizers: false
 load_aurora_pretrain_weights: false
-log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_wm_ri
+log_dir: /ritom/scratch/cscs/tligawa/ai-4-weather/experiments/ESFMs/ESFM_outputs/ESFM_s_wm_ri
 data_sources: 
   - era5
 mask_config_type: unmaskv3_var5spatial25vertical25

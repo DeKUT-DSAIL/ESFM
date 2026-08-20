@@ -16,7 +16,7 @@ kernel_crps_weight: 0.0
 stats_loss_weight: 0.0
 use_resolution_specific_patch_tokenizers: true
 load_aurora_pretrain_weights: false
-log_dir: /iopsstor/scratch/cscs/fozdemir/ESFM_outputs/ESFM_s_nm_e11k_lt24h_ho
+log_dir: /ritom/scratch/cscs/tligawa/ai-4-weather/experiments/ESFMs/ESFM_outputs/ESFM_s_nm_e11k_lt24h_ho
 data_sources: 
   - station_npz_11kvar9_holdout_lt24h
 loss_config_name: station11k
