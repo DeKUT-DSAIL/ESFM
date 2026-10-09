@@ -1,7 +1,7 @@
-image = "/capstor/store/cscs/swissai/a122/container_images2/enroot/esfm_physicsnemo2503.sqsh"
+image = "ritom_scratch/container-images/torch_physicsnemo_img.sqsh"
 
 writable = true
-mounts = ["/users", "/capstor", "/iopsstor",]
+mounts = ["/users", "/capstor", "/iopsstor", "/ritom"]
 
 [annotations] 
 com.hooks.aws_ofi_nccl.enabled = "true" 
