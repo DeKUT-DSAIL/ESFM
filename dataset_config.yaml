@@ -911,10 +911,10 @@ modis_val_2024_tq:
 station_tahmo_var9_test:
     class: StationGridNPZ # use 11k configuration
     batch_size: 14
-    train_time_start: "2018-01-01T00:00:00.000000"
-    train_time_end: "2023-12-31T23:59:59.999999"
-    val_time_start: "2025-01-01T00:00:00.000000"
-    val_time_end: "2026-08-31T23:59:59.999999"
+    train_time_start: "2015-01-01T00:00:00.000000"
+    train_time_end: "2020-12-31T23:59:59.999999"
+    val_time_start: "2021-01-01T00:00:00.000000"
+    val_time_end: "2021-12-31T23:59:59.999999"
     conf:
         name: station_tahmo_test
         path: /ritom/scratch/cscs/tligawa/ai-4-weather/data/TAHMO/tahmo_training_data.npy # Need to change these paths to ensure the npy arrays exist
@@ -929,10 +929,10 @@ station_tahmo_var9_test:
 station_tahmo_var9_test_lt12h:
     class: StationGridNPZ
     batch_size: 14
-    train_time_start: "2018-01-01T00:00:00.000000"
-    train_time_end: "2023-12-31T23:59:59.999999"
-    val_time_start: "2025-01-01T00:00:00.000000"
-    val_time_end: "2026-08-31T23:59:59.999999"
+    train_time_start: "2015-01-01T00:00:00.000000"
+    train_time_end: "2020-12-31T23:59:59.999999"
+    val_time_start: "2021-01-01T00:00:00.000000"
+    val_time_end: "2021-12-31T23:59:59.999999"
     conf:
         name: station_tahmo_test
         path: /ritom/scratch/cscs/tligawa/ai-4-weather/data/TAHMO/tahmo_training_data.npy
@@ -947,10 +947,10 @@ station_tahmo_var9_test_lt12h:
 station_tahmo_var9_test_lt24h:
     class: StationGridNPZ
     batch_size: 14
-    train_time_start: "2018-01-01T00:00:00.000000"
-    train_time_end: "2023-12-31T23:59:59.999999"
-    val_time_start: "2025-01-01T00:00:00.000000"
-    val_time_end: "2026-08-31T23:59:59.999999"
+    train_time_start: "2015-01-01T00:00:00.000000"
+    train_time_end: "2020-12-31T23:59:59.999999"
+    val_time_start: "2021-01-01T00:00:00.000000"
+    val_time_end: "2021-12-31T23:59:59.999999"
     conf:
         name: station_tahmo_test
         path: /ritom/scratch/cscs/tligawa/ai-4-weather/data/TAHMO/tahmo_training_data.npy
@@ -965,9 +965,9 @@ station_tahmo_var9_test_lt24h:
 station_tahmo_var9_holdout_test:
     class: StationGridNPZ
     batch_size: 14
-    train_time_start: "2018-01-01T00:00:00.000000"
-    train_time_end: "2023-12-31T23:59:59.999999"
-    val_time_start: "2025-01-01T00:00:00.000000"
+    train_time_start: "2015-01-01T00:00:00.000000"
+    train_time_end: "2020-12-31T23:59:59.999999"
+    val_time_start: "2022-01-01T00:00:00.000000"
     val_time_end: "2026-08-31T23:59:59.999999"
     conf:
         name: station_tahmo_holdout_test
@@ -983,9 +983,9 @@ station_tahmo_var9_holdout_test:
 station_tahmo_var9_holdout_test_lt12h:
     class: StationGridNPZ
     batch_size: 14
-    train_time_start: "2018-01-01T00:00:00.000000"
-    train_time_end: "2023-12-31T23:59:59.999999"
-    val_time_start: "2025-01-01T00:00:00.000000"
+    train_time_start: "2015-01-01T00:00:00.000000"
+    train_time_end: "2020-12-31T23:59:59.999999"
+    val_time_start: "2022-01-01T00:00:00.000000"
     val_time_end: "2026-08-31T23:59:59.999999"
     conf:
         name: station_tahmo_holdout_test
@@ -1001,9 +1001,9 @@ station_tahmo_var9_holdout_test_lt12h:
 station_tahmo_var9_holdout_test_lt24h:
     class: StationGridNPZ
     batch_size: 14
-    train_time_start: "2018-01-01T00:00:00.000000"
-    train_time_end: "2023-12-31T23:59:59.999999"
-    val_time_start: "2025-01-01T00:00:00.000000"
+    train_time_start: "2015-01-01T00:00:00.000000"
+    train_time_end: "2020-12-31T23:59:59.999999"
+    val_time_start: "2022-01-01T00:00:00.000000"
     val_time_end: "2026-08-31T23:59:59.999999"
     conf:
         name: station_tahmo_holdout_test
