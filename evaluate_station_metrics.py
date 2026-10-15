@@ -384,10 +384,13 @@ def compute_metrics_for_init_time(it, lt, var_abr, var_a2f, p_preds, station_typ
             variables = [v.decode() if isinstance(v, bytes) else v for v in vars_raw]
             var_indices = [variables.index(v) for v in var_abr]
         
-        elif station_type == '11k_holdout':    
-            p_data = os.path.join(p_station, 'stations_11k_holdout_data.npy')
-            p_meta = os.path.join(p_station, 'stations_11k_holdout_meta.npz')
-            # p_mapping = os.path.join(p_station, 'final_holdout_mapping_90x180.json')
+        elif station_type in ('11k_holdout', 'tahmo_holdout'):    
+            if station_type == 'tahmo_holdout':
+                p_data = os.path.join(p_station, 'tahmo_holdout_data.npy')
+                p_meta = os.path.join(p_station, 'tahmo_holdout_meta.npz')
+            else:
+                p_data = os.path.join(p_station, 'stations_11k_holdout_data.npy')
+                p_meta = os.path.join(p_station, 'stations_11k_holdout_meta.npz')
             
             # Load with memory mapping (efficient)
             data_mmap = np.load(p_data, mmap_mode='r')
@@ -590,8 +593,8 @@ def main():
     parser = argparse.ArgumentParser(description='Compute evaluation metrics for station predictions')
     parser.add_argument('--p_preds', type=str, required=True,
                        help='Path to predictions zarr file')
-    parser.add_argument('--station_type', type=str, required=True, choices=['11k', 'w5k', '11k_holdout'],
-                       help='Station dataset type: 11k, w5k, or 11k_holdout')
+    parser.add_argument('--station_type', type=str, required=True, choices=['11k', 'w5k', '11k_holdout', 'tahmo_holdout'],
+                       help='Station dataset type: 11k, w5k, 11k_holdout, or tahmo_holdout')
     parser.add_argument('--p_station', type=str, 
                        default='/capstor/store/cscs/swissai/a122/ESFM_ExtraDataset',
                        help='Path to station dataset directory')
@@ -636,9 +639,9 @@ def main():
                     ckpt_data = pickle.load(f)
                     lt_hours = ckpt_data['lead_time_hours']
                     existing_checkpoints[lt_hours] = ckpt_path
-                    print(f"  ✓ Found checkpoint for lead_time {lt_hours:.0f}h")
+                    print(f"  Found checkpoint for lead_time {lt_hours:.0f}h")
             except Exception as e:
-                print(f"  ⚠️  Failed to load checkpoint {ckpt_file}: {e}")
+                print(f"  WARNING: Failed to load checkpoint {ckpt_file}: {e}")
         print(f"Will skip {len(existing_checkpoints)} already-completed lead_times\n")
     else:
         print(f"\nNo existing checkpoints found - starting fresh evaluation\n")
@@ -651,6 +654,10 @@ def main():
     elif args.station_type == '11k_holdout':    
         p_data = os.path.join(args.p_station, 'stations_11k_holdout_data.npy')
         p_meta = os.path.join(args.p_station, 'stations_11k_holdout_meta.npz')
+        gt_reader = StationGTReader(p_data, p_meta)
+    elif args.station_type == 'tahmo_holdout':
+        p_data = os.path.join(args.p_station, 'tahmo_holdout_data.npy')
+        p_meta = os.path.join(args.p_station, 'tahmo_holdout_meta.npz')
         gt_reader = StationGTReader(p_data, p_meta)
     elif args.station_type == 'w5k':
         p_data = os.path.join(args.p_station, 'stations_data.npz')
@@ -704,9 +711,9 @@ def main():
     # Determine number of CPU cores to use
     # For w5k, use fewer workers to avoid OOM (each worker loads zarr data)
     max_cores = args.max_cores
-    if args.station_type == 'w5k':
-        # Limit to 8-12 workers for w5k to reduce memory pressure
-        n_jobs = min(12, max_cores, len(init_times))
+    if args.station_type in ('w5k', 'tahmo_holdout'):
+        # Use threading backend with shared pre-loaded predictions
+        n_jobs = min(32, max_cores, len(init_times))
         backend = 'threading'  # Threading shares memory better than loky
     else:
         n_jobs = min(max(1, multiprocessing.cpu_count() - 2), max_cores, len(init_times))
@@ -732,7 +739,7 @@ def main():
         
         # Check if this lead_time is already checkpointed
         if lt_hours in existing_checkpoints:
-            print(f"\n[Lead Time {lt_idx+1}/{len(lead_times)}] ⏭️  SKIPPING {lt_hours:.0f}h (checkpoint exists)")
+            print(f"\n[Lead Time {lt_idx+1}/{len(lead_times)}] SKIPPING {lt_hours:.0f}h (checkpoint exists)")
             # Load the checkpoint data into metrics_per_timestep
             with open(existing_checkpoints[lt_hours], 'rb') as f:
                 ckpt_data = pickle.load(f)
@@ -745,29 +752,27 @@ def main():
         
         print(f"\n[Lead Time {lt_idx+1}/{len(lead_times)}] Processing {lt_hours:.0f} hours with {n_jobs} parallel workers...")
         
-        # For w5k, pre-load all predictions for this lead_time to avoid repeated zarr openings
+        # For w5k and tahmo_holdout, pre-load all predictions for this lead_time to avoid repeated zarr openings
         pred_data_preloaded = None
-        if args.station_type == 'w5k':
-            print(f"  Pre-loading predictions for lead_time {lt_hours:.0f}h into memory...")
+        if args.station_type in ('w5k', 'tahmo_holdout'):
+            print(f"  Pre-loading predictions for lead_time {lt_hours:.0f}h into memory in bulk...")
             ds_preds_lt = xr.open_zarr(args.p_preds, consolidated=False)
             
-            # Load all data for this lead_time
-            pred_data_preloaded = {}
+            # Load all data for this lead_time in one single bulk read
             if hasattr(ds_preds_lt, 'ensemble'):
-                for it in init_times:
-                    try:
-                        pred_data_preloaded[it] = ds_preds_lt.sel(init_time=it, lead_time=lt, ensemble=ensemble).load()
-                    except (KeyError, ValueError):
-                        pass  # Skip missing init times
+                ds_lt_loaded = ds_preds_lt.sel(lead_time=lt, ensemble=ensemble).load()
             else:
-                for it in init_times:
-                    try:
-                        pred_data_preloaded[it] = ds_preds_lt.sel(init_time=it, lead_time=lt).load()
-                    except (KeyError, ValueError):
-                        pass  # Skip missing init times
+                ds_lt_loaded = ds_preds_lt.sel(lead_time=lt).load()
+            
+            pred_data_preloaded = {}
+            for it in init_times:
+                try:
+                    pred_data_preloaded[it] = ds_lt_loaded.sel(init_time=it)
+                except (KeyError, ValueError):
+                    pass  # Skip missing init times
             
             ds_preds_lt.close()
-            print(f"  Loaded {len(pred_data_preloaded)} predictions into memory")
+            print(f"  Loaded {len(pred_data_preloaded)} predictions into memory in bulk")
         
         # Process all init_times for this lead_time
         results = Parallel(n_jobs=n_jobs, backend=backend, verbose=10)(
@@ -804,11 +809,11 @@ def main():
                     'timestamp': datetime.datetime.now().isoformat(),
                     'elapsed_seconds': lt_elapsed,
                 }, f)
-            print(f"  💾 Checkpoint saved: {checkpoint_filename}")
+            print(f"  Checkpoint saved: {checkpoint_filename}")
         except Exception as e:
-            print(f"  ⚠️  Failed to save checkpoint: {e}")
+            print(f"  WARNING: Failed to save checkpoint: {e}")
         
-        print(f"  ✓ Completed lead_time {lt_hours:.0f}h in {lt_elapsed:.1f}s ({len(init_times)} samples, {n_skipped} skipped)")
+        print(f"  Completed lead_time {lt_hours:.0f}h in {lt_elapsed:.1f}s ({len(init_times)} samples, {n_skipped} skipped)")
         
         # Progress update with ETA
         elapsed = time.time() - start_time
@@ -832,7 +837,7 @@ def main():
     
     total_elapsed = time.time() - start_time
     print("\n" + "=" * 80)
-    print(f"✓ All metrics computed in {total_elapsed/60:.2f} minutes ({completed_iterations} iterations)")
+    print(f"All metrics computed in {total_elapsed/60:.2f} minutes ({completed_iterations} iterations)")
     print("=" * 80)
     
     # Report missing GT timestamps
@@ -951,7 +956,7 @@ def main():
                     'mean': np.mean(all_pearson), 'std': np.std(all_pearson)
                 }
     
-    print(f"\n✓ Metrics aggregation complete!")
+    print(f"\nMetrics aggregation complete!")
     
     # Create detailed DataFrame
     print("\nCreating detailed metrics table...")
@@ -1048,7 +1053,7 @@ def main():
             'df_summary': df_summary,
             'save_timestamp': datetime.datetime.now().isoformat(),
         }, f)
-    print(f"✓ Saved comprehensive metrics to: {metrics_output_path}")
+    print(f"Saved comprehensive metrics to: {metrics_output_path}")
     
     # Save summary pickle
     metrics_summary_path = os.path.join(args.output_dir, 'station_evaluation_metrics_summary.pkl')
@@ -1060,17 +1065,17 @@ def main():
             'var_a2f': var_a2f,
             'p_preds': args.p_preds,
         }, f)
-    print(f"✓ Saved summary metrics to: {metrics_summary_path}")
+    print(f"Saved summary metrics to: {metrics_summary_path}")
     
     # Save detailed CSV
     csv_path = os.path.join(args.output_dir, 'station_evaluation_metrics_detailed.csv')
     df_detailed.to_csv(csv_path, index=False)
-    print(f"✓ Saved detailed metrics CSV to: {csv_path}")
+    print(f"Saved detailed metrics CSV to: {csv_path}")
     
     # Save summary CSV
     summary_csv_path = os.path.join(args.output_dir, 'station_evaluation_metrics_summary.csv')
     df_summary.to_csv(summary_csv_path, index=False)
-    print(f"✓ Saved summary metrics CSV to: {summary_csv_path}")
+    print(f"Saved summary metrics CSV to: {summary_csv_path}")
     
     print("\n" + "=" * 80)
     print("EVALUATION COMPLETE!")
@@ -1082,7 +1087,7 @@ def main():
     print(f"All checkpoints saved in: {checkpoint_dir}")
     print(f"Results saved to: {args.output_dir}")
     print("=" * 80)
-    print("\n💡 TIP: If job crashes, simply rerun - it will resume from checkpoints!")
+    print("\nTIP: If job crashes, simply rerun - it will resume from checkpoints!")
     print("    To start fresh, delete the checkpoints/ directory.")
     print("=" * 80)
     
