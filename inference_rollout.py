@@ -93,8 +93,41 @@ if test_time_intervals == 'default':
         (datetime(2024, 7, 2, 0, 0, 0), datetime(2024, 7, 8, 23, 0, 0)),
         (datetime(2024, 10, 2, 0, 0, 0), datetime(2024, 10, 8, 23, 0, 0)),
     ]
+elif test_time_intervals == 'tahmo_2025':
+    # 10-day test blocks across different seasons in 2025 for TAHMO
+    start_end_time_intervals = [
+        (datetime(2025, 2, 2, 0, 0, 0), datetime(2025, 2, 12, 23, 0, 0)),
+        (datetime(2025, 5, 2, 0, 0, 0), datetime(2025, 5, 12, 23, 0, 0)),
+        (datetime(2025, 8, 2, 0, 0, 0), datetime(2025, 8, 12, 23, 0, 0)),
+        (datetime(2025, 11, 2, 0, 0, 0), datetime(2025, 11, 12, 23, 0, 0)),
+    ]
+elif test_time_intervals == 'tahmo_2026':
+    # 10-day test blocks across JF, MAM, and JJA in 2026 for TAHMO
+    start_end_time_intervals = [
+        (datetime(2026, 2, 2, 0, 0, 0), datetime(2026, 2, 12, 23, 0, 0)),  # JF season (Feb)
+        (datetime(2026, 5, 2, 0, 0, 0), datetime(2026, 5, 12, 23, 0, 0)),  # MAM season (May)
+        (datetime(2026, 8, 2, 0, 0, 0), datetime(2026, 8, 12, 23, 0, 0)),  # JJA season (Aug)
+    ]
+elif test_time_intervals == 'tahmo_full':
+    # 10-day test blocks across all seasons in 2024-2026 for TAHMO holdout
+    start_end_time_intervals = [
+        # 2024
+        (datetime(2024, 2, 2, 0, 0, 0), datetime(2024, 2, 12, 23, 0, 0)),
+        (datetime(2024, 5, 2, 0, 0, 0), datetime(2024, 5, 12, 23, 0, 0)),
+        (datetime(2024, 8, 2, 0, 0, 0), datetime(2024, 8, 12, 23, 0, 0)),
+        (datetime(2024, 11, 2, 0, 0, 0), datetime(2024, 11, 12, 23, 0, 0)),
+        # 2025
+        (datetime(2025, 2, 2, 0, 0, 0), datetime(2025, 2, 12, 23, 0, 0)),
+        (datetime(2025, 5, 2, 0, 0, 0), datetime(2025, 5, 12, 23, 0, 0)),
+        (datetime(2025, 8, 2, 0, 0, 0), datetime(2025, 8, 12, 23, 0, 0)),
+        (datetime(2025, 11, 2, 0, 0, 0), datetime(2025, 11, 12, 23, 0, 0)),
+        # 2026
+        (datetime(2026, 2, 2, 0, 0, 0), datetime(2026, 2, 12, 23, 0, 0)),
+        (datetime(2026, 5, 2, 0, 0, 0), datetime(2026, 5, 12, 23, 0, 0)),
+        (datetime(2026, 8, 2, 0, 0, 0), datetime(2026, 8, 12, 23, 0, 0)),
+    ]
 else:
-    raise ValueError(f"Unknown test_time_intervals: {test_time_intervals}. Choose 'default' or '2022'.")
+    raise ValueError(f"Unknown test_time_intervals: {test_time_intervals}. Choose 'default', '2022', 'tahmo_2025', 'tahmo_2026', or 'tahmo_full'.")
 
 # Build tmp_pred_fname based on test_time_intervals and use_inds_subset
 if test_time_intervals == 'default':
@@ -204,9 +237,9 @@ def load_data(yaml_path, datasets_type):
             conf_infer = yml_file[dataset_type]['conf']
             path_dataset = conf_infer['path']
             if isinstance(path_dataset, list):
-                conf_infer['path'] = [os.path.join(DATA_PATH_PREFIX, p) for p in path_dataset]
+                conf_infer['path'] = [p if os.path.isabs(p) else os.path.join(DATA_PATH_PREFIX, p) for p in path_dataset]
             else:
-                conf_infer['path'] = os.path.join(DATA_PATH_PREFIX, conf_infer['path'])
+                conf_infer['path'] = path_dataset if os.path.isabs(path_dataset) else os.path.join(DATA_PATH_PREFIX, path_dataset)
             
             if dataset_type.startswith('era5') or dataset_type.startswith('station') or dataset_type.startswith('modis') or dataset_type.startswith('cosmo'):
                 conf_infer['inds'] = inds
@@ -720,7 +753,7 @@ def main():
         d_ckpt_step = {}
         for ckpt in ckpt_list:
             try:
-                s = os.path.basename(ckpt).split('=')[1].split("-loss_train")[0]
+                s = os.path.basename(ckpt).split('=')[1].split("-loss_train")[0].split('.')[0]
                 step = int(s)
                 d_ckpt_step[step] = ckpt
             except Exception as e:
@@ -751,19 +784,59 @@ def main():
         ckpt_step = 0
     else:
         ckpt_step = -1
-        ckpt_path = os.path.join(args.log_dir, args.ckpt_name)
+        ckpt_path = os.path.join(args.log_dir, args.ckpt_name) if not os.path.isabs(args.ckpt_name) else args.ckpt_name
+        if '=' in os.path.basename(ckpt_path):
+            try:
+                s = os.path.basename(ckpt_path).split('=')[1].split("-loss_train")[0].split('.')[0]
+                ckpt_step = int(s)
+            except Exception:
+                pass
+        if ckpt_step == -1:
+            ckpt_step = 100000
         
     if is_rank0:
         print(f'Using checkpoint path: {ckpt_path}')
+
+    # Detect if checkpoint is safetensors format
+    is_safetensors = False
+    if ckpt_path is not None and os.path.exists(ckpt_path):
+        if ckpt_path.endswith('.safetensors'):
+            is_safetensors = True
+        else:
+            try:
+                with open(ckpt_path, 'rb') as f:
+                    f.seek(8)
+                    if f.read(2) == b'{"':
+                        is_safetensors = True
+            except Exception:
+                pass
+
+    if is_safetensors:
+        from safetensors.torch import load_file
+        if is_rank0:
+            print(f'Loading weights from safetensors checkpoint: {ckpt_path}')
+        state_dict = load_file(ckpt_path)
+        has_net_prefix = any(k.startswith('net.') for k in state_dict.keys())
+        if has_net_prefix:
+            state_dict_net_rm = {k[4:] if k.startswith('net.') else k: v for k, v in state_dict.items()}
+        else:
+            state_dict_net_rm = state_dict
+        msg = model.load_state_dict(state_dict_net_rm, strict=False)
+        if is_rank0:
+            print(f'Loaded weights into model: missing keys: {len(msg.missing_keys)}, unexpected keys: {len(msg.unexpected_keys)}')
+
     copy_threads = []
     if args.vars_mask_during_testing is None and args.plevs_mask_during_testing is None and args.mask_regions_during_testing is None:
         # Setup model and trainer
         model_lightning = InferenceModule(model, surf_vars_save=surf_vars_save, atmos_vars_save=atmos_vars_save, levels_save=levels_save, strict_loading=args.strict_loading)
-        torch_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
-        if torch_version >= (2, 6):
-            trainer.test(model_lightning, dataloader_val, ckpt_path=ckpt_path, weights_only=False)
+        if is_safetensors:
+            trainer.test(model_lightning, dataloader_val, ckpt_path=None)
         else:
-            trainer.test(model_lightning, dataloader_val, ckpt_path=ckpt_path)
+            torch_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
+            if torch_version >= (2, 6):
+                trainer.test(model_lightning, dataloader_val, ckpt_path=ckpt_path, weights_only=False)
+            else:
+                trainer.test(model_lightning, dataloader_val, ckpt_path=ckpt_path)
         logging.info(f"Rank {myrank}: Inference completed.")
         # Synchronize before merge - ensure all ranks finish writing predictions
         if args.devices > 1:
@@ -773,14 +846,15 @@ def main():
             copy_thread = merge_prediction_files_and_copy_to_capstor(args.log_dir, ckpt_step, args.config, execute_copy_to_capstor=False, tmp_pred_fname=tmp_pred_fname)
             copy_threads.append(copy_thread)
     else:
-        lightning_state_dict = torch.load(ckpt_path, map_location='cpu', weights_only=False)
-        global_step = lightning_state_dict['global_step']
-        if is_rank0:
-            print(f'Loaded checkpoint at global step: {global_step}')
-        state_dict = lightning_state_dict['state_dict']
-        state_dict_net_rm = {k[4:]: v for k, v in state_dict.items() if k.startswith('net.')}
-        model.load_state_dict(state_dict_net_rm, strict=args.strict_loading, )
-        del lightning_state_dict
+        if not is_safetensors:
+            lightning_state_dict = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+            global_step = lightning_state_dict['global_step']
+            if is_rank0:
+                print(f'Loaded checkpoint at global step: {global_step}')
+            state_dict = lightning_state_dict['state_dict']
+            state_dict_net_rm = {k[4:]: v for k, v in state_dict.items() if k.startswith('net.')}
+            model.load_state_dict(state_dict_net_rm, strict=args.strict_loading, )
+            del lightning_state_dict
         if args.mask_multiple_during_testing: 
             ## mask everything passed simultaneously and do a single inference run.
             tmp_prediction_save_dir = 'mask_'

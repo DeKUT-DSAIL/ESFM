@@ -1,4 +1,4 @@
-image = "ritom_scratch/container-images/torch_physicsnemo_img.sqsh"
+image = "/ritom/scratch/cscs/tligawa/container-images/torch_physicsnemo_img.sqsh"
 
 writable = true
 mounts = ["/users", "/capstor", "/iopsstor", "/ritom"]
